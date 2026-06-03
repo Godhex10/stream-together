@@ -668,11 +668,75 @@
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
   /* Responsive: collapse chat on small screens */
+/* Responsive: Transform chat into an expandable bottom sheet on small screens */
   @media (max-width: 700px) {
-    :root { --chat-width: 100%; }
-    .main { flex-direction: column; }
-    .chat-sidebar { width: 100%; height: 320px; border-left: none; border-top: 1px solid var(--border); }
-    .video-col { flex: none; height: calc(100vh - var(--topbar-h) - 56px - 320px); }
+    :root { 
+      --chat-width: 100%; 
+    }
+    
+    .main { 
+      flex-direction: column; 
+    }
+    
+    .video-col { 
+      flex: 1; 
+      min-height: 0;
+      height: auto; 
+    }
+
+    .chat-sidebar { 
+      width: 100%; 
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--surface);
+      border-left: none; 
+      border-top: 1px solid var(--border); 
+      border-radius: 16px 16px 0 0;
+      z-index: 100;
+      
+      /* Initial mobile height (shows just the header tabs/drag handle) */
+      height: 48px; 
+      min-height: 48px;
+      max-height: 80vh;
+      
+      box-shadow: 0 -10px 30px rgba(0,0,0,0.6);
+      transition: height 0.15s ease-out; /* Keeps finger dragging feeling snappy */
+    }
+
+    /* Draggable indicator area targeting the top header row */
+    .chat-header {
+      cursor: grab;
+      user-select: none;
+      background: var(--surface2);
+      border-radius: 16px 16px 0 0;
+      position: relative;
+      padding-top: 10px; /* Make space for visual indicator pill */
+      height: 58px; /* Slightly taller to accommodate the visual pill */
+      flex-direction: column;
+      justify-content: center;
+      gap: 4px;
+    }
+
+    /* Add a clean pill handle line so users know it's interactive */
+    .chat-header::before {
+      content: '';
+      width: 36px;
+      height: 4px;
+      background: var(--muted2);
+      border-radius: 2px;
+      position: absolute;
+      top: 6px;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    /* Ensure panels stretch beautifully within our dynamic height container */
+    .tab-panel {
+      flex: 1;
+      min-height: 0;
+    }
   }
 </style>
 </head>
@@ -761,7 +825,7 @@
     </div>
   </div>
 
-  <div class="chat-sidebar">
+  <div class="chat-sidebar" id="chatSidebar">
     <div class="chat-header">
       <div class="chat-tabs" role="tablist">
         <button class="chat-tab active" role="tab" aria-selected="true" data-tab="chat">Chat</button>
@@ -1311,6 +1375,66 @@ function escapeHTML(str) {
     tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
   );
 }
+
+
+/* ══════════════════════════════════════════════
+    MOBILE DRAGGABLE CHAT SHEET ENGINE
+══════════════════════════════════════════════ */
+const chatSidebar = document.getElementById('chatSidebar');
+const chatHeader = document.querySelector('.chat-header');
+
+let isDraggingChat = false;
+let startTouchY = 0;
+let startChatHeight = 0;
+
+// Track initial press on the chat header (only on mobile sizing)
+chatHeader.addEventListener('touchstart', (e) => {
+  if (window.innerWidth > 700) return; // Ignore on desktop layouts
+  
+  // Prevent accidental keyboard popups or text selections during drag initialization
+  if (e.target.tagName === 'BUTTON') return; 
+
+  isDraggingChat = true;
+  startTouchY = e.touches[0].clientY;
+  startChatHeight = chatSidebar.offsetHeight;
+  
+  // Kill transitions temporarily to make movement follow finger identically
+  chatSidebar.style.transition = 'none';
+});
+
+// Resizing panel smoothly relative to movement distance
+window.addEventListener('touchmove', (e) => {
+  if (!isDraggingChat) return;
+
+  const currentTouchY = e.touches[0].clientY;
+  const distanceMovedUp = startTouchY - currentTouchY;
+  
+  const targetHeight = startChatHeight + distanceMovedUp;
+  const maxLimit = window.innerHeight * 0.8; // Cap sheet at 80% screen height
+
+  if (targetHeight >= 48 && targetHeight <= maxLimit) {
+    chatSidebar.style.height = `${targetHeight}px`;
+  }
+});
+
+// Handle finger release snaps
+window.addEventListener('touchend', () => {
+  if (!isDraggingChat) return;
+  isDraggingChat = false;
+  
+  // Re-enable smooth CSS snapping animations
+  chatSidebar.style.transition = 'height 0.2s ease-out';
+  
+  const finalHeight = chatSidebar.offsetHeight;
+  const screenHeightMidpoint = window.innerHeight * 0.35;
+
+  // Snapping logic thresholds
+  if (finalHeight > screenHeightMidpoint) {
+    chatSidebar.style.height = '70vh'; // Snap completely open to watch text
+  } else {
+    chatSidebar.style.height = '48px'; // Minimal footprint collapse
+  }
+});
 
 window.addEventListener('DOMContentLoaded', initSupabase);
 </script>
