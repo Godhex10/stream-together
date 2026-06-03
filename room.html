@@ -40,14 +40,15 @@
   }
 
   /* ─── TOP BAR ─── */
+/* ─── TOP BAR (FLEX CONFIGURATION & LAYOUT RESPONSIVENESS) ─── */
   .topbar {
     height: var(--topbar-h);
     background: rgba(10,10,10,0.98);
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
-    padding: 0 1.2rem;
-    gap: 1rem;
+    padding: 0 1rem;
+    gap: 0.75rem;
     flex-shrink: 0;
     z-index: 50;
   }
@@ -58,16 +59,30 @@
     text-decoration: none;
     letter-spacing: 0.04em;
     white-space: nowrap;
+    display: flex;
+    align-items: center;
   }
   .logo-sm span { color: #fff; }
+  
+  /* Manage toggle logo text across responsive breakpoints */
+  .logo-text-mobile { display: none; }
+  .logo-text-full { display: block; }
+
   .topbar-divider {
-    width: 1px; height: 22px;
+    width: 1px; height: 20px;
     background: var(--border);
     flex-shrink: 0;
   }
   .room-info {
     display: flex;
     flex-direction: column;
+    min-width: 0; /* Allows horizontal flexible shrink container behaviors to calculate child text truncations */
+    flex: 1;
+  }
+  .room-title-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     min-width: 0;
   }
   .room-name {
@@ -76,65 +91,68 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    max-width: 180px; /* Locks desktop ceiling widths to keep space free for viewer chips */
   }
   .room-meta {
     font-size: 0.7rem;
     color: var(--muted);
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .live-badge {
     background: var(--red);
     color: #fff;
-    font-size: 0.6rem;
+    font-size: 0.55rem;
     font-weight: 700;
-    letter-spacing: 0.08em;
-    padding: 1px 6px;
+    letter-spacing: 0.06em;
+    padding: 1px 5px;
     border-radius: 3px;
     animation: badgePulse 2s infinite;
+    flex-shrink: 0;
   }
   @keyframes badgePulse {
     0%, 100% { opacity: 1; }
-    50% { opacity: 0.7; }
+    50% { opacity: 0.65; }
   }
   .topbar-right {
     margin-left: auto;
     display: flex;
     align-items: center;
-    gap: 0.6rem;
+    gap: 0.5rem;
     flex-shrink: 0;
   }
   .viewer-stack { display: flex; align-items: center; }
   .v-chip {
-    width: 28px; height: 28px;
+    width: 26px; height: 26px;
     border-radius: 50%;
     border: 2px solid var(--dark);
-    font-size: 0.62rem;
+    font-size: 0.6rem;
     font-weight: 600;
     display: flex; align-items: center; justify-content: center;
-    margin-left: -7px;
+    margin-left: -6px;
     cursor: default;
     transition: transform 0.15s;
   }
   .v-chip:first-child { margin-left: 0; }
-  .v-chip:hover { transform: translateY(-2px); z-index: 1; }
+  .v-chip:hover { transform: translateY(-2px); z-index: 5; }
   .v-count {
     background: var(--surface2);
     border: 2px solid var(--dark);
     color: var(--muted);
-    font-size: 0.6rem;
+    font-size: 0.55rem;
   }
   .btn-icon {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 7px;
     color: var(--text);
-    width: 34px; height: 34px;
+    width: 32px; height: 32px;
     display: flex; align-items: center; justify-content: center;
     cursor: pointer;
-    font-size: 1rem;
+    font-size: 0.9rem;
     transition: background 0.15s, border-color 0.15s;
+    flex-shrink: 0;
   }
   .btn-icon:hover { background: var(--surface2); border-color: var(--border-hover); }
   .btn-share {
@@ -142,17 +160,17 @@
     border: none;
     border-radius: 7px;
     color: #fff;
-    padding: 0 1rem;
-    height: 34px;
+    padding: 0 0.75rem;
+    height: 32px;
     font-family: 'DM Sans', sans-serif;
-    font-size: 0.8rem;
+    font-size: 0.78rem;
     font-weight: 600;
     cursor: pointer;
-    display: flex; align-items: center; gap: 0.4rem;
+    display: flex; align-items: center; gap: 0.3rem;
     transition: background 0.15s, transform 0.1s;
+    flex-shrink: 0;
   }
-  .btn-share:hover { background: var(--red-dark); transform: scale(1.03); }
-
+  .btn-share:hover { background: var(--red-dark); }
   /* ─── MAIN LAYOUT ─── */
   .main {
     flex: 1;
@@ -737,27 +755,68 @@
       flex: 1;
       min-height: 0;
     }
+
+    /* Top Bar Mobile Optimization Rules */
+    .logo-text-full { display: none; }
+    .logo-text-mobile { display: block; font-size: 1.5rem; }
+    
+    .topbar {
+      padding: 0 0.6rem;
+      gap: 0.5rem;
+    }
+    
+    .room-name {
+      max-width: 90px; /* Strongly caps the room name width on mobile to avoid overflow */
+      font-size: 0.8rem;
+    }
+    
+    /* Hide secondary Room: loading/ID text completely on mobile to open layout gaps */
+    .room-meta { display: none; }
+    
+    /* Drop invite label text, keeping just the icon to minimize footprint button spaces */
+    .share-text { display: none; }
+    .btn-share {
+      padding: 0;
+      width: 32px;
+      height: 32px;
+      justify-content: center;
+    }
+    .share-icon { font-size: 0.9rem; }
+    
+    /* Minimize avatars size ratios for extreme mobile safety layouts */
+    .v-chip {
+      width: 24px;
+      height: 24px;
+      font-size: 0.55rem;
+    }
+  
   }
 </style>
 </head>
 <body>
 
 <div class="topbar">
-  <a class="logo-sm" href="index.html">Stream<span>Together</span></a>
+  <a class="logo-sm" href="index.html">
+    <span class="logo-text-full">Stream<span>Together</span></span>
+    <span class="logo-text-mobile">S<span>T</span></span>
+  </a>
   <div class="topbar-divider"></div>
+  
   <div class="room-info">
-    <span class="room-name" id="roomNameDisplay">Movie Night 🍿</span>
-    <span class="room-meta">
+    <div class="room-title-wrapper">
+      <span class="room-name" id="roomNameDisplay">Movie Night 🍿</span>
       <span class="live-badge">LIVE</span>
-      <span id="roomIdDisplay">Room: loading…</span>
-    </span>
+    </div>
+    <span class="room-meta" id="roomIdDisplay">Room: loading…</span>
   </div>
+  
   <div class="topbar-right">
     <div class="viewer-stack" id="viewerStack" aria-label="Current viewers">
       </div>
     <button class="btn-icon" id="settingsBtn" title="Settings" aria-label="Settings">⚙️</button>
     <button class="btn-share" id="shareBtn" aria-label="Share room">
-      🔗 Invite
+      <span class="share-icon">🔗</span>
+      <span class="share-text">Invite</span>
     </button>
   </div>
 </div>
