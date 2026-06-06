@@ -39,7 +39,6 @@
     flex-direction: column;
   }
 
-  /* ─── TOP BAR (FLEX CONFIGURATION & LAYOUT RESPONSIVENESS) ─── */
   .topbar {
     height: var(--topbar-h);
     background: rgba(10,10,10,0.98);
@@ -62,8 +61,6 @@
     align-items: center;
   }
   .logo-sm span { color: #fff; }
-  
-  /* Manage toggle logo text across responsive breakpoints */
   .logo-text-mobile { display: none; }
   .logo-text-full { display: block; }
 
@@ -75,7 +72,7 @@
   .room-info {
     display: flex;
     flex-direction: column;
-    min-width: 0; /* Allows horizontal flexible shrink behavior to calculate child text truncations */
+    min-width: 0;
     flex: 1;
   }
   .room-title-wrapper {
@@ -90,7 +87,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 180px; /* Locks desktop ceiling widths to keep space free for viewer chips */
+    max-width: 180px;
   }
   .room-meta {
     font-size: 0.7rem;
@@ -171,7 +168,6 @@
   }
   .btn-share:hover { background: var(--red-dark); transform: scale(1.03); }
 
-  /* ─── MAIN LAYOUT ─── */
   .main {
     flex: 1;
     display: flex;
@@ -179,7 +175,6 @@
     overflow: hidden;
   }
 
-  /* ─── VIDEO COLUMN ─── */
   .video-col {
     flex: 1;
     display: flex;
@@ -205,6 +200,33 @@
     object-fit: contain;
     display: block;
   }
+
+  /* Sync overlay */
+  #syncOverlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.78);
+    z-index: 20;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  #syncOverlay:hover { background: rgba(0,0,0,0.85); }
+  #syncOverlay .sync-play-icon {
+    width: 72px; height: 72px;
+    background: var(--red);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.8rem;
+    transition: transform 0.15s;
+  }
+  #syncOverlay:hover .sync-play-icon { transform: scale(1.08); }
+  #syncOverlay p { color: #fff; font-size: 1rem; font-weight: 600; }
+  #syncOverlay small { color: var(--muted); font-size: 0.78rem; }
 
   /* URL prompt overlay */
   .url-overlay {
@@ -262,7 +284,7 @@
   }
   .btn-load:hover { background: var(--red-dark); }
 
-  /* Player controls bar */
+  /* Controls bar */
   .controls-bar {
     height: 56px;
     background: rgba(10,10,10,0.98);
@@ -351,7 +373,7 @@
     animation: badgePulse 1.5s infinite;
   }
 
-  /* ─── CHAT SIDEBAR ─── */
+  /* Chat sidebar */
   .chat-sidebar {
     width: var(--chat-width);
     flex-shrink: 0;
@@ -388,8 +410,6 @@
     gap: 0.35rem;
   }
   .chat-tab.active { color: var(--text); border-bottom-color: var(--red); }
-  
-  /* Inline Red Alert Text Counter Dot for desktop chat tab views */
   .tab-badge {
     background: #ff3b30;
     color: #fff;
@@ -409,11 +429,9 @@
     border-radius: 10px;
   }
 
-  /* Tab panels */
   .tab-panel { display: none; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
   .tab-panel.active { display: flex; }
 
-  /* Chat messages */
   .messages-list {
     flex: 1;
     overflow-y: auto;
@@ -478,7 +496,6 @@
     border-radius: 10px;
   }
 
-  /* Chat input */
   .chat-input-area {
     padding: 0.75rem;
     border-top: 1px solid var(--border);
@@ -540,7 +557,6 @@
   .send-btn:hover { background: var(--red-dark); transform: scale(1.06); }
   .send-btn svg { width: 16px; height: 16px; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
-  /* Viewers tab */
   .viewers-list {
     flex: 1;
     overflow-y: auto;
@@ -579,7 +595,6 @@
   }
   .online-dot { width: 7px; height: 7px; background: #22c55e; border-radius: 50%; }
 
-  /* Emoji reactions */
   .reactions-bar {
     padding: 0.5rem 0.75rem;
     border-top: 1px solid var(--border);
@@ -599,7 +614,6 @@
   }
   .reaction-btn:hover { background: var(--surface); transform: scale(1.2); }
 
-  /* Floating reactions animation */
   .float-reaction {
     position: fixed;
     font-size: 1.6rem;
@@ -612,7 +626,6 @@
     100% { opacity: 0; transform: translateY(-120px) scale(1.4); }
   }
 
-  /* Share modal */
   .modal-overlay {
     position: fixed; inset: 0;
     background: rgba(0,0,0,0.8);
@@ -681,7 +694,6 @@
   }
   .modal-close:hover { color: var(--text); border-color: var(--border-hover); }
 
-  /* Toast notification */
   .toast {
     position: fixed;
     bottom: 1.5rem;
@@ -701,42 +713,21 @@
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-  /* Responsive: collapse chat on small screens into a clean floating overlay layout */
   @media (max-width: 700px) {
     .logo-text-full { display: none; }
     .logo-text-mobile { display: block; font-size: 1.5rem; }
-    
-    .topbar {
-      padding: 0 0.6rem;
-      gap: 0.5rem;
-    }
-    
-    .room-name {
-      max-width: 90px; /* Strong cap to keep name from crushing layouts */
-      font-size: 0.8rem;
-    }
-    
-    /* Hide absolute textual ID on small layouts to optimize grid tracking spaces */
+    .topbar { padding: 0 0.6rem; gap: 0.5rem; }
+    .room-name { max-width: 90px; font-size: 0.8rem; }
     .room-meta { display: none; }
-    
-    /* Toggle action button typography fields into icon elements */
     .share-text { display: none; }
-    .btn-share {
-      padding: 0;
-      width: 32px;
-      height: 32px;
-      justify-content: center;
-    }
-    
+    .btn-share { padding: 0; width: 32px; height: 32px; justify-content: center; }
     .main { flex-direction: column; }
-    
-    /* TRANSFORM CHAT PANEL INTO BLURRED DRAWING INTERFACE LAYER OVER THE VIDEO SCREEN */
     .chat-sidebar {
       position: fixed;
       top: var(--topbar-h);
       bottom: 0;
-      right: -100%; /* Shunted completely out of horizontal screen limits by default */
-      width: 85vw; /* Keeps left margins visible so users can click outside to collapse panel */
+      right: -100%;
+      width: 85vw;
       background: rgba(17, 17, 17, 0.98);
       backdrop-filter: blur(12px);
       border-left: 1px solid var(--border);
@@ -746,15 +737,8 @@
       border-radius: 16px 0 0 16px;
       height: auto;
     }
-
-    /* Active open signature state class assigned through bubble listener mechanics */
-    .chat-sidebar.open {
-      right: 0;
-    }
-    
+    .chat-sidebar.open { right: 0; }
     .video-col { flex: 1; height: calc(100vh - var(--topbar-h)); }
-
-    /* MOBILE BUBBLE TRIGGER COMPONENT STYLE */
     .mobile-chat-bubble {
       display: flex;
       align-items: center;
@@ -774,11 +758,7 @@
       z-index: 140;
       transition: transform 0.2s, background-color 0.2s;
     }
-    .mobile-chat-bubble:active {
-      transform: scale(0.9);
-    }
-
-    /* Red Alert Notification Badge Dot */
+    .mobile-chat-bubble:active { transform: scale(0.9); }
     .notification-badge {
       position: absolute;
       top: 2px;
@@ -788,7 +768,7 @@
       background: #ff3b30;
       border: 2px solid var(--black);
       border-radius: 50%;
-      display: none; /* Invisible by default configuration */
+      display: none;
       animation: badgePop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
     }
   }
@@ -798,7 +778,6 @@
     100% { transform: scale(1); }
   }
 
-  /* Keep mobile floating elements safe from desktop viewport spaces */
   @media (min-width: 701px) {
     .mobile-chat-bubble { display: none; }
   }
@@ -839,23 +818,27 @@
 
   <div class="video-col">
     <div class="player-wrap">
+
+      <!-- Sync overlay: shown when browser blocks autoplay for remote play events -->
+      <div id="syncOverlay" onclick="dismissSyncOverlay()">
+        <div class="sync-play-icon">▶</div>
+        <p>Click to sync with the room</p>
+        <small>Your browser requires a tap before playing</small>
+      </div>
+
       <div class="url-overlay" id="urlOverlay">
         <div class="url-overlay-icon">🎬</div>
         <h2>Load a Video</h2>
         <p>Paste a direct video URL (.mp4 or any direct link) to start your watch party. Everyone in the room will see it.</p>
         <div class="url-input-row" style="flex-direction: column; gap: 0.8rem;">
           <div style="display: flex; gap: 0.6rem; width: 100%;">
-            <input type="url" class="url-input" id="videoUrlInput" placeholder="https://example.com/movie.mp4"
-              autocomplete="off">
+            <input type="url" class="url-input" id="videoUrlInput" placeholder="https://example.com/movie.mp4" autocomplete="off">
             <button class="btn-load" id="loadVideoBtn">Load</button>
           </div>
-        
-          <div
-            style="display: flex; align-items: center; justify-content: center; width: 100%; gap: 0.5rem; margin-top: 0.4rem;">
+          <div style="display: flex; align-items: center; justify-content: center; width: 100%; gap: 0.5rem; margin-top: 0.4rem;">
             <span style="color: var(--muted); font-size: 0.8rem;">or</span>
             <input type="file" id="fileUploadInput" accept="video/mp4" style="display: none;">
-            <button class="btn-load" id="uploadFileBtn"
-              style="background: var(--surface2); border: 1px solid var(--border-hover);">📁 Upload MP4 File</button>
+            <button class="btn-load" id="uploadFileBtn" style="background: var(--surface2); border: 1px solid var(--border-hover);">📁 Upload MP4 File</button>
           </div>
         </div>
       </div>
@@ -960,7 +943,6 @@
 <script>
 /* ══════════════════════════════════════════════
     SUPABASE CONFIG
-    Replace these with your actual project values
 ══════════════════════════════════════════════ */
 const SUPABASE_URL = 'https://xkrddzphzgfxrednxvsb.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_rTuJfAPMkdzIVefPuMnaqA_Y-bagxcI';
@@ -984,6 +966,7 @@ let myColor = localStorage.getItem('st_color') || randomColor();
 let isSyncingFromRemote = false;
 let videoLoaded = false;
 let unreadCount = 0;
+let pendingRemotePlay = null;
 
 document.getElementById('roomIdDisplay').textContent = 'Room: ' + roomId;
 document.getElementById('shareUrl').textContent = location.href;
@@ -991,11 +974,9 @@ document.getElementById('shareUrl').textContent = location.href;
 const usernameInput = document.getElementById('usernameInput');
 usernameInput.value = myName;
 usernameInput.addEventListener('change', async () => {
-  const oldName = myName;
   myName = usernameInput.value.trim() || 'Guest_' + Math.floor(Math.random() * 900 + 100);
   usernameInput.value = myName;
   localStorage.setItem('st_username', myName);
-  
   if (channel) {
     addSystemMsg(`You changed your name to ${myName}`);
     await channel.track({ name: myName, color: myColor, joinedAt: Date.now() });
@@ -1038,6 +1019,19 @@ function initSupabase() {
         newPresences.forEach(p => {
           if (p.name !== myName) addSystemMsg(p.name + ' joined the party 👋');
         });
+        // Send current video state to late joiners so they catch up instantly
+        if (videoLoaded && channel) {
+          channel.send({
+            type: 'broadcast',
+            event: 'video_sync',
+            payload: {
+              type: 'state_response',
+              src: video.src,
+              time: video.currentTime,
+              paused: video.paused
+            }
+          });
+        }
         updateViewers();
       })
       .on('presence', { event: 'leave' }, ({ leftPresences }) => {
@@ -1096,7 +1090,7 @@ document.getElementById('fileUploadInput').addEventListener('change', async (e) 
 
   const uploadBtn = document.getElementById('uploadFileBtn');
   const originalText = uploadBtn.textContent;
-  
+
   uploadBtn.textContent = '⏳ Uploading...';
   uploadBtn.disabled = true;
   addSystemMsg(`Uploading "${file.name}" to cloud storage...`);
@@ -1108,10 +1102,7 @@ document.getElementById('fileUploadInput').addEventListener('change', async (e) 
   try {
     const { data, error } = await supabaseClient.storage
       .from('movies')
-      .upload(filePath, file, {
-        cacheControl: '3600',
-        upsert: false
-      });
+      .upload(filePath, file, { cacheControl: '3600', upsert: false });
 
     if (error) throw error;
 
@@ -1120,7 +1111,6 @@ document.getElementById('fileUploadInput').addEventListener('change', async (e) 
       .getPublicUrl(filePath);
 
     const publicUrl = publicUrlData.publicUrl;
-
     setupVideoSource(publicUrl);
     addSystemMsg('Cloud upload complete! Movie loaded for everyone 🎬');
     broadcastSync({ type: 'load', src: publicUrl });
@@ -1213,30 +1203,71 @@ document.getElementById('fullscreenBtn').addEventListener('click', () => {
 });
 
 /* ══════════════════════════════════════════════
-    SYNC BROADCAST RECEIVER
+    SYNC BROADCAST
 ══════════════════════════════════════════════ */
 function broadcastSync(payload) {
   if (!channel) return;
   channel.send({ type: 'broadcast', event: 'video_sync', payload });
 }
 
+/* ══════════════════════════════════════════════
+    SYNC RECEIVER — handles all remote video events
+    Fixes:
+      1. Autoplay block → shows "Click to sync" overlay
+      2. Late joiners → state_response catches them up
+══════════════════════════════════════════════ */
 function handleRemoteSync(payload) {
   isSyncingFromRemote = true;
+
   if (payload.type === 'load' && payload.src) {
     setupVideoSource(payload.src);
-    addSystemMsg('A new video was loaded by a viewer 🎬');
+    addSystemMsg('A new video was loaded 🎬');
+
   } else if (payload.type === 'play') {
     if (Math.abs(video.currentTime - payload.time) > 1.5) {
       video.currentTime = payload.time;
     }
-    video.play();
+    // video.play() returns a Promise — catch the autoplay block
+    video.play().catch(() => {
+      pendingRemotePlay = payload.time;
+      document.getElementById('syncOverlay').style.display = 'flex';
+    });
+
   } else if (payload.type === 'pause') {
     video.currentTime = payload.time;
     video.pause();
+
   } else if (payload.type === 'seek') {
     video.currentTime = payload.time;
+
+  } else if (payload.type === 'state_response') {
+    // Late joiner catch-up: load the video and jump to current position
+    if (!videoLoaded) {
+      setupVideoSource(payload.src);
+      addSystemMsg('Syncing you to the current video 🎬');
+    }
+    setTimeout(() => {
+      video.currentTime = payload.time;
+      if (!payload.paused) {
+        video.play().catch(() => {
+          pendingRemotePlay = payload.time;
+          document.getElementById('syncOverlay').style.display = 'flex';
+        });
+      }
+    }, 500);
   }
+
   setTimeout(() => { isSyncingFromRemote = false; }, 200);
+}
+
+// Called when the viewer clicks the sync overlay
+function dismissSyncOverlay() {
+  document.getElementById('syncOverlay').style.display = 'none';
+  if (pendingRemotePlay !== null) {
+    video.currentTime = pendingRemotePlay;
+    pendingRemotePlay = null;
+  }
+  video.play();
 }
 
 /* ══════════════════════════════════════════════
@@ -1266,11 +1297,11 @@ function sendMessage() {
   };
 
   renderMessage(payload, true);
-  
+
   if (channel) {
     channel.send({ type: 'broadcast', event: 'chat_message', payload });
   }
-  
+
   msgInput.value = '';
   msgInput.style.height = '38px';
 }
@@ -1278,9 +1309,7 @@ function sendMessage() {
 function renderMessage(payload, isOwn) {
   const group = document.createElement('div');
   group.className = `msg-group ${isOwn ? 'msg-own' : ''}`;
-
   const initials = payload.name.slice(0, 2).toUpperCase();
-  
   group.innerHTML = `
     <div class="msg-header">
       <div class="msg-avatar" style="background:${payload.color}; color:#000;">${initials}</div>
@@ -1289,7 +1318,6 @@ function renderMessage(payload, isOwn) {
     </div>
     <div class="msg-bubble ${isOwn ? 'own' : ''}">${escapeHTML(payload.text)}</div>
   `;
-  
   messagesList.appendChild(group);
   messagesList.scrollTop = messagesList.scrollHeight;
 }
@@ -1314,9 +1342,7 @@ function updateViewers() {
 
   const stack = document.getElementById('viewerStack');
   stack.innerHTML = '';
-  const visiblePresences = presences.slice(0, 3);
-  
-  visiblePresences.forEach(p => {
+  presences.slice(0, 3).forEach(p => {
     const chip = document.createElement('div');
     chip.className = 'v-chip';
     chip.style.backgroundColor = p.color;
@@ -1325,7 +1351,6 @@ function updateViewers() {
     chip.title = p.name;
     stack.appendChild(chip);
   });
-
   if (presences.length > 3) {
     const countChip = document.createElement('div');
     countChip.className = 'v-chip v-count';
@@ -1335,18 +1360,14 @@ function updateViewers() {
 
   const listContainer = document.getElementById('viewersList');
   listContainer.innerHTML = '';
-  
   presences.forEach((p, idx) => {
     const row = document.createElement('div');
     row.className = 'viewer-row';
     const isHost = idx === 0;
-    
     row.innerHTML = `
       <div class="v-avatar" style="background:${p.color}; color:#000;">${p.name.slice(0, 2).toUpperCase()}</div>
       <div class="viewer-info">
-        <div class="viewer-name">
-          ${escapeHTML(p.name)} ${p.name === myName ? '(You)' : ''}
-        </div>
+        <div class="viewer-name">${escapeHTML(p.name)} ${p.name === myName ? '(You)' : ''}</div>
         <div class="viewer-status">Watching</div>
       </div>
       ${isHost ? '<span class="host-badge">👑 Host</span>' : ''}
@@ -1373,13 +1394,10 @@ function spawnFloatingReaction(emoji) {
   const el = document.createElement('div');
   el.className = 'float-reaction';
   el.textContent = emoji;
-  
   const wrap = document.querySelector('.player-wrap');
   const rect = wrap.getBoundingClientRect();
-  
   el.style.left = (rect.left + Math.random() * (rect.width - 40) + 20) + 'px';
   el.style.top = (rect.top + rect.height - 60) + 'px';
-  
   document.body.appendChild(el);
   el.addEventListener('animationend', () => el.remove());
 }
@@ -1391,12 +1409,9 @@ document.querySelectorAll('.chat-tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.chat-tab').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    
     tab.classList.add('active');
     tab.setAttribute('aria-selected', 'true');
     document.getElementById(tab.getAttribute('data-tab') + 'Panel').classList.add('active');
-    
-    // Clear desktop tab alerts instantly if switching onto Chat Panel
     if (tab.getAttribute('data-tab') === 'chat') {
       unreadCount = 0;
       const tabBadge = document.getElementById('tabNotificationBadge');
@@ -1435,10 +1450,7 @@ function fmtTime(seconds, includeHrs = false) {
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
   const pad = num => String(num).padStart(2, '0');
-  
-  if (h > 0 || includeHrs) {
-    return `${h}:${pad(m)}:${pad(s)}`;
-  }
+  if (h > 0 || includeHrs) return `${h}:${pad(m)}:${pad(s)}`;
   return `${m}:${pad(s)}`;
 }
 
@@ -1448,13 +1460,13 @@ function randomColor() {
 }
 
 function escapeHTML(str) {
-  return str.replace(/[&<>'"]/g, 
+  return str.replace(/[&<>'"]/g,
     tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
   );
 }
 
 /* ══════════════════════════════════════════════
-    MOBILE FLOATING CHAT BUBBLE MECHANICS
+    MOBILE FLOATING CHAT BUBBLE
 ══════════════════════════════════════════════ */
 const mobileBubble = document.getElementById('mobileChatBubble');
 const chatBadge = document.getElementById('chatNotificationBadge');
@@ -1467,12 +1479,9 @@ let isChatOpenOnMobile = false;
 mobileBubble.addEventListener('click', (e) => {
   e.stopPropagation();
   isChatOpenOnMobile = !isChatOpenOnMobile;
-  
   if (isChatOpenOnMobile) {
     chatSidebar.classList.add('open');
-    chatBadge.style.display = 'none'; 
-    
-    // Auto sync layout to clear alerts on open trigger
+    chatBadge.style.display = 'none';
     unreadCount = 0;
     const tabBadge = document.getElementById('tabNotificationBadge');
     tabBadge.style.display = 'none';
@@ -1491,33 +1500,25 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// Alert pipeline triggered on incoming broadcast payloads
 function handleIncomingMessageAlert() {
   const isMobile = window.innerWidth <= 700;
   const isChatTabActive = chatTabButton.classList.contains('active');
-  
-  // Calculate if the user is truly looking away from the messages
   const isUnread = (isMobile && !isChatOpenOnMobile) || (!isMobile && !isChatTabActive);
-  
+
   if (isUnread) {
     unreadCount++;
-    
-    // 1. Render tab counter badge text adjustments
     const tabBadge = document.getElementById('tabNotificationBadge');
     tabBadge.textContent = unreadCount;
     tabBadge.style.display = 'inline-block';
-    
-    // 2. Control floating bubble dots on screens under 700px width
-    if (isMobile) {
-      chatBadge.style.display = 'block';
-    }
-    
-    // 3. Play the clean user-synchronized sound file
+    if (isMobile) chatBadge.style.display = 'block';
     chatSound.currentTime = 0;
-    chatSound.play().catch(err => console.log("Audio awaiting user interaction framework rules:", err));
+    chatSound.play().catch(err => console.log('Audio awaiting user interaction:', err));
   }
 }
 
+/* ══════════════════════════════════════════════
+    INIT
+══════════════════════════════════════════════ */
 window.addEventListener('DOMContentLoaded', () => {
   initSupabase();
 
