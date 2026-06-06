@@ -1227,8 +1227,14 @@ function handleRemoteSync(payload) {
     if (Math.abs(video.currentTime - payload.time) > 1.5) {
       video.currentTime = payload.time;
     }
-    // video.play() returns a Promise — catch the autoplay block
-    video.play().catch(() => {
+    // Mute first so browser allows autoplay, then restore sound after 300ms
+    const wasMuted = video.muted;
+    video.muted = true;
+    video.play().then(() => {
+      setTimeout(() => { video.muted = wasMuted; }, 300);
+    }).catch(() => {
+      // Even muted play failed — fall back to overlay
+      video.muted = wasMuted;
       pendingRemotePlay = payload.time;
       document.getElementById('syncOverlay').style.display = 'flex';
     });
@@ -1249,7 +1255,12 @@ function handleRemoteSync(payload) {
     setTimeout(() => {
       video.currentTime = payload.time;
       if (!payload.paused) {
-        video.play().catch(() => {
+        const wasMuted = video.muted;
+        video.muted = true;
+        video.play().then(() => {
+          setTimeout(() => { video.muted = wasMuted; }, 300);
+        }).catch(() => {
+          video.muted = wasMuted;
           pendingRemotePlay = payload.time;
           document.getElementById('syncOverlay').style.display = 'flex';
         });
