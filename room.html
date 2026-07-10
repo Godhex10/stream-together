@@ -207,33 +207,6 @@
   }
   #videoPlayer.video-hidden { display: none; }
 
-  /* Sync overlay */
-  #syncOverlay {
-    display: none;
-    position: absolute;
-    inset: 0;
-    background: rgba(0,0,0,0.78);
-    z-index: 20;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 0.75rem;
-    cursor: pointer;
-    transition: opacity 0.2s;
-  }
-  #syncOverlay:hover { background: rgba(0,0,0,0.85); }
-  #syncOverlay .sync-play-icon {
-    width: 72px; height: 72px;
-    background: var(--red);
-    border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 1.8rem;
-    transition: transform 0.15s;
-  }
-  #syncOverlay:hover .sync-play-icon { transform: scale(1.08); }
-  #syncOverlay p { color: #fff; font-size: 1rem; font-weight: 600; }
-  #syncOverlay small { color: var(--muted); font-size: 0.78rem; }
-
   /* URL prompt overlay */
   .url-overlay {
     position: absolute;
@@ -856,13 +829,6 @@
         }
       </script>
 
-      <!-- Sync overlay: shown when browser blocks autoplay for remote play events -->
-      <div id="syncOverlay" onclick="dismissSyncOverlay()">
-        <div class="sync-play-icon">▶</div>
-        <p>Sync to the Room</p>
-        <small>Click to join playback already in progress</small>
-      </div>
-
       <div class="url-overlay" id="urlOverlay">
         <div class="url-overlay-icon">🎬</div>
         <h2>Load a Video</h2>
@@ -1007,7 +973,6 @@ let myColor  = localStorage.getItem('st_color') || randomColor();
 let isSyncingFromRemote = false;
 let videoLoaded         = false;
 let unreadCount         = 0;
-let pendingRemotePlay   = null;
 
 // Viewers presence map: clientId -> { name, color }
 const viewers = new Map();
@@ -1235,66 +1200,6 @@ function setupVideoSource(url) {
   if (url.includes('real-debrid.com') || url.includes('rdb.so')) {
     showToast('🎬 Stream loaded — press play!');
   }
-  watchForUnplayableVideo();
-}
-
-/* ── Detect "black screen but audio plays" ──
-   Some files (usually series in HEVC/x265 or MKV containers) decode their
-   audio track but not their video track in this browser. We catch that by
-   checking videoWidth once metadata/data arrives: if it stays 0 while the
-   file is otherwise loading, the video track can't be rendered here. */
-let unplayableTimer = null;
-function watchForUnplayableVideo() {
-  clearTimeout(unplayableTimer);
-  hideCodecWarning();
-
-  // Hard decode error (unsupported container/codec entirely).
-  video.onerror = () => {
-    const err = video.error;
-    // MEDIA_ERR_SRC_NOT_SUPPORTED (4) / decode error (3) → unplayable here.
-    if (!err || err.code === 3 || err.code === 4) showCodecWarning();
-  };
-
-  // Soft case: file loads & audio plays, but no video frame (videoWidth 0).
-  const check = () => {
-    if (video.readyState >= 2 && video.videoWidth === 0) showCodecWarning();
-  };
-  video.addEventListener('loadeddata', check, { once: true });
-  // Fallback timer in case loadeddata fires before the track is evaluated.
-  unplayableTimer = setTimeout(() => {
-    if (videoLoaded && video.readyState >= 2 && video.videoWidth === 0) {
-      showCodecWarning();
-    }
-  }, 6000);
-}
-
-function showCodecWarning() {
-  let el = document.getElementById('codecWarning');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'codecWarning';
-    el.style.cssText =
-      'position:absolute;inset:0;z-index:6;display:flex;flex-direction:column;' +
-      'align-items:center;justify-content:center;text-align:center;gap:0.6rem;' +
-      'padding:2rem;background:rgba(0,0,0,0.88);color:#fff;';
-    el.innerHTML =
-      '<div style="font-size:2.4rem">🎞️❌</div>' +
-      '<p style="font-weight:600;font-size:1rem;max-width:420px;line-height:1.5">' +
-      'This stream\'s video can\'t play in your browser (likely an HEVC / MKV file). ' +
-      'You\'re hearing audio but the picture won\'t render here.</p>' +
-      '<p style="color:var(--muted);font-size:0.82rem;max-width:420px">' +
-      'Go back and pick a stream tagged <b style="color:#4ade80">MP4</b> — those play everywhere.</p>' +
-      '<button onclick="window.history.back()" style="margin-top:0.4rem;background:var(--red);' +
-      'border:none;color:#fff;padding:0.55rem 1.4rem;border-radius:7px;font-weight:600;cursor:pointer">' +
-      '← Pick another stream</button>';
-    document.querySelector('.player-wrap').appendChild(el);
-  }
-  el.style.display = 'flex';
-}
-
-function hideCodecWarning() {
-  const el = document.getElementById('codecWarning');
-  if (el) el.style.display = 'none';
 }
 
 /* ══════════════════════════════════════════════
@@ -1324,24 +1229,12 @@ function handleRemoteSync(payload) {
     if (Math.abs(video.currentTime - payload.time) > 1.5) {
       video.currentTime = payload.time;
     }
-    // Always play muted first — browser allows muted autoplay without user gesture.
-    // Show the sync overlay so the guest clicks to unmute/confirm playback.
-    // This is the only reliable cross-browser approach.
-    video.muted = true;
+    // Try to play with sound. If the browser blocks unmuted autoplay,
+    // fall back to muted autoplay — the guest can unmute with the 🔊 control.
     video.play()
-      .then(() => {
-        // Muted autoplay worked — show overlay so guest can click to unmute
-        pendingRemotePlay = null;
-        document.getElementById('syncOverlay').style.display = 'flex';
-        const small = document.querySelector('#syncOverlay small');
-        if (small) small.textContent = 'Host pressed play — click to unmute & join';
-      })
       .catch(() => {
-        // Even muted autoplay failed — show overlay for manual start
-        pendingRemotePlay = payload.time;
-        document.getElementById('syncOverlay').style.display = 'flex';
-        const small = document.querySelector('#syncOverlay small');
-        if (small) small.textContent = 'Host is watching — click to join';
+        video.muted = true;
+        return video.play().catch(() => {});
       })
       .finally(() => { isSyncingFromRemote = false; });
 
@@ -1357,25 +1250,6 @@ function handleRemoteSync(payload) {
   } else {
     isSyncingFromRemote = false;
   }
-}
-
-function dismissSyncOverlay() {
-  document.getElementById('syncOverlay').style.display = 'none';
-  isSyncingFromRemote = true;
-
-  // Unmute and seek to pending time if any
-  video.muted = false;
-  if (pendingRemotePlay !== null) {
-    video.currentTime = pendingRemotePlay;
-    pendingRemotePlay = null;
-  }
-
-  // Now play — this works because user just clicked (user gesture)
-  video.play()
-    .catch(() => {})
-    .finally(() => {
-      setTimeout(() => { isSyncingFromRemote = false; }, 200);
-    });
 }
 
 /* ══════════════════════════════════════════════

@@ -651,28 +651,6 @@ function getMagnetFmt(stream) {
   return 'mkv';
 }
 
-/* Get the video codec family from the detail string. HEVC/x265, AV1 and
-   friends don't decode in most browsers; H.264/x264 does everywhere. */
-function getVideoCodec(stream) {
-  const full = getFullDetail(stream) + ' ' + (stream.behaviorHints?.filename || '').toUpperCase();
-  if (/X265|H\.?265|HEVC/.test(full))      return 'hevc';
-  if (/AV1/.test(full))                    return 'av1';
-  if (/X264|H\.?264|AVC/.test(full))       return 'h264';
-  return 'unknown';
-}
-
-/* True when a stream should play in a normal browser <video> tag:
-   MP4/WebM container AND not an HEVC/AV1 video codec. MKV never plays in
-   Chrome, and HEVC won't render even inside an MP4. Nuvio is always OK. */
-function isBrowserPlayable(stream) {
-  if (stream._source === 'nuvio') return true;
-  const fmt   = getMagnetFmt(stream);
-  const codec = getVideoCodec(stream);
-  if (fmt !== 'mp4' && fmt !== 'webm') return false; // mkv/avi → no
-  if (codec === 'hevc' || codec === 'av1') return false;
-  return true;
-}
-
 /* Parse quality from name or full detail */
 function getQualityLabel(stream) {
   const full = (stream.name || '') + ' ' + getFullDetail(stream);
@@ -846,12 +824,9 @@ function renderStreamItems(streams, movie) {
       return;
     }
 
-    // Step 2 — Sort: browser-playable (MP4/H.264) first, then smallest → biggest.
-    // HEVC/MKV files cause black-screen-with-audio in browsers, so they sink
-    // to the bottom. Unknown size goes to the end within each group.
+    // Step 2 — Sort smallest to biggest file size
+    // Unknown size goes to the end
     const sorted = [...filtered].sort((a, b) => {
-      const pDiff = (isBrowserPlayable(b) ? 1 : 0) - (isBrowserPlayable(a) ? 1 : 0);
-      if (pDiff !== 0) return pDiff;
       const sizeA = a.size || Infinity;
       const sizeB = b.size || Infinity;
       return sizeA - sizeB;
@@ -872,11 +847,6 @@ function renderStreamItems(streams, movie) {
 
       // Build badge row: size + audio + seeders + source
       const badges = [];
-      const playable = isBrowserPlayable(stream);
-      badges.push(playable
-        ? `<span style="background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.3);border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:#4ade80;" title="MP4/H.264 — plays in any browser">▶ Plays here</span>`
-        : `<span style="background:rgba(229,9,20,0.15);border:1px solid rgba(229,9,20,0.4);border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:#ff6b6b;" title="HEVC/MKV — may show a black screen (audio only) in browser">⚠ May not play</span>`
-      );
       if (sizeLabel) badges.push(
         `<span style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:#ddd;">💾 ${escapeHTML(sizeLabel)}</span>`
       );
@@ -932,13 +902,6 @@ function renderStreamItems(streams, movie) {
             const allStreams  = streamCache[movie.id] || [];
             const allMagnets  = allStreams
               .filter(s => s._source !== 'nuvio') // only magnet-based sources
-              .slice() // don't mutate the cache
-              .sort((a, b) => {
-                // Browser-playable (MP4/H.264) first, then smallest → biggest
-                const pDiff = (isBrowserPlayable(b) ? 1 : 0) - (isBrowserPlayable(a) ? 1 : 0);
-                if (pDiff !== 0) return pDiff;
-                return (a.size || Infinity) - (b.size || Infinity);
-              })
               .map(s => getStreamUrl(s))
               .filter(u => u && isMagnet(u));
 
