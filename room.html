@@ -1,3 +1,4 @@
+<!-- room.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,7 +7,7 @@
 <title>StreamTogether — Watch Party</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css" integrity="sha512-2SwdPD6INVrV/lHTZbO2nodKhrnDdJK9/kg2XD1r9uGqPo1cUbujc+IYdlYdEErWNu69gVcYgdxlmVmzTWnetw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.ably.com/lib/ably.min-2.js"></script>
 
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -29,6 +30,9 @@
   }
 
   html, body { height: 100%; overflow: hidden; }
+  @media (max-width: 700px) {
+    html, body { height: 100%; overflow: hidden; }
+  }
 
   body {
     background: var(--black);
@@ -199,7 +203,9 @@
     height: 100%;
     object-fit: contain;
     display: block;
+    background: #000;
   }
+  #videoPlayer.video-hidden { display: none; }
 
   /* Sync overlay */
   #syncOverlay {
@@ -737,8 +743,31 @@
       border-radius: 16px 0 0 16px;
       height: auto;
     }
-    .chat-sidebar.open { right: 0; }
-    .video-col { flex: 1; height: calc(100vh - var(--topbar-h)); }
+    .chat-sidebar.open,
+    .chat-sidebar.mobile-open { right: 0; }
+
+    /* Dark backdrop behind the chat drawer on mobile */
+    .chat-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 149;
+    }
+    .chat-backdrop.visible { display: block; }
+    .video-col {
+      flex: none;
+      width: 100%;
+      /* Use dvh (dynamic viewport height) for mobile browsers that
+         account for the address bar shrinking/showing */
+      height: calc(100dvh - var(--topbar-h) - 56px);
+    }
+    .player-wrap {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      background: #000;
+    }
     .mobile-chat-bubble {
       display: flex;
       align-items: center;
@@ -800,6 +829,7 @@
   </div>
   <div class="topbar-right">
     <div class="viewer-stack" id="viewerStack" aria-label="Current viewers"></div>
+    <a class="btn-icon" href="library.html" title="Back to Library" aria-label="Back to Library" style="text-decoration:none;">📚</a>
     <button class="btn-icon" id="settingsBtn" title="Settings" aria-label="Settings">⚙️</button>
     <button class="btn-share" id="shareBtn" aria-label="Share room">
       <span class="share-icon">🔗</span><span class="share-text"> Invite</span>
@@ -819,11 +849,18 @@
   <div class="video-col">
     <div class="player-wrap">
 
+      <!-- Hide url-overlay immediately if stream URL is in params (before JS runs) -->
+      <script>
+        if (new URLSearchParams(location.search).get('stream')) {
+          document.write('<style>#urlOverlay{display:none!important}</style>');
+        }
+      </script>
+
       <!-- Sync overlay: shown when browser blocks autoplay for remote play events -->
       <div id="syncOverlay" onclick="dismissSyncOverlay()">
         <div class="sync-play-icon">▶</div>
-        <p>Click to sync with the room</p>
-        <small>Your browser requires a tap before playing</small>
+        <p>Sync to the Room</p>
+        <small>Click to join playback already in progress</small>
       </div>
 
       <div class="url-overlay" id="urlOverlay">
@@ -843,7 +880,7 @@
         </div>
       </div>
 
-      <video id="videoPlayer" controls preload="metadata" style="display:none;" aria-label="Watch party video player"></video>
+      <video id="videoPlayer" controls preload="metadata" playsinline webkit-playsinline class="video-hidden" aria-label="Watch party video player"></video>
     </div>
 
     <div class="controls-bar">
@@ -881,6 +918,7 @@
     </div>
   </div>
 
+  <div class="chat-backdrop" id="chatBackdrop"></div>
   <div class="chat-sidebar" id="chatSidebar">
     <div class="chat-header">
       <div class="chat-tabs" role="tablist">
@@ -942,10 +980,9 @@
 
 <script>
 /* ══════════════════════════════════════════════
-    SUPABASE CONFIG
+    ABLY CONFIG
 ══════════════════════════════════════════════ */
-const SUPABASE_URL = 'https://xkrddzphzgfxrednxvsb.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_rTuJfAPMkdzIVefPuMnaqA_Y-bagxcI';
+const ABLY_KEY = 'ZPrVhg.ayhdDQ:Cn1thcvZc03KfcHFx0tqB_OWnZS984NFsRWejNJZXR0';
 
 /* ══════════════════════════════════════════════
     ROOM SETUP
@@ -960,114 +997,140 @@ if (!roomId) {
 }
 
 const directStreamUrl = params.get('stream');
+const directTitle     = params.get('title');
+if (directTitle) {
+  document.getElementById('roomNameDisplay').textContent = directTitle;
+}
 
-let myName = localStorage.getItem('st_username') || 'Guest_' + Math.floor(Math.random() * 900 + 100);
-let myColor = localStorage.getItem('st_color') || randomColor();
+let myName   = localStorage.getItem('st_username') || 'Guest_' + Math.floor(Math.random() * 900 + 100);
+let myColor  = localStorage.getItem('st_color') || randomColor();
 let isSyncingFromRemote = false;
-let videoLoaded = false;
-let unreadCount = 0;
-let pendingRemotePlay = null;
+let videoLoaded         = false;
+let unreadCount         = 0;
+let pendingRemotePlay   = null;
+
+// Viewers presence map: clientId -> { name, color }
+const viewers = new Map();
 
 document.getElementById('roomIdDisplay').textContent = 'Room: ' + roomId;
-document.getElementById('shareUrl').textContent = location.href;
+document.getElementById('shareUrl').textContent      = location.href;
 
 const usernameInput = document.getElementById('usernameInput');
 usernameInput.value = myName;
-usernameInput.addEventListener('change', async () => {
+usernameInput.addEventListener('change', () => {
   myName = usernameInput.value.trim() || 'Guest_' + Math.floor(Math.random() * 900 + 100);
   usernameInput.value = myName;
   localStorage.setItem('st_username', myName);
-  if (channel) {
-    addSystemMsg(`You changed your name to ${myName}`);
-    await channel.track({ name: myName, color: myColor, joinedAt: Date.now() });
-  }
+  publishPresence();
+  addSystemMsg('You changed your name to ' + myName);
 });
 
 /* ══════════════════════════════════════════════
-    SUPABASE CLIENT & SYNC MANAGEMENT
+    ABLY CLIENT
 ══════════════════════════════════════════════ */
-let supabaseClient = null;
-let channel = null;
+let ablyClient  = null;
+let channel     = null;
+let presenceCh  = null;
+let isChannelReady = false;
 
-function initSupabase() {
-  if (SUPABASE_URL === 'https://your-project-id.supabase.co' || SUPABASE_URL === '') {
-    showToast('⚠️ Add your Supabase keys to room.html to enable sync');
-    runLocalMode();
-    return;
-  }
+function initAbly() {
   try {
-    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-    channel = supabaseClient.channel('room:' + roomId, {
-      config: { broadcast: { self: false }, presence: { key: roomId } }
+    ablyClient = new Ably.Realtime({ key: ABLY_KEY, clientId: myName + '_' + Date.now() });
+
+    ablyClient.connection.on('connected', () => {
+      console.log('[Ably] Connected ✅');
+      isChannelReady = true;
+      showToast('✅ Connected to room');
+      publishPresence();
     });
 
-    channel
-      .on('broadcast', { event: 'video_sync' }, ({ payload }) => {
-        handleRemoteSync(payload);
-      })
-      .on('broadcast', { event: 'chat_message' }, ({ payload }) => {
-        renderMessage(payload, false);
-        handleIncomingMessageAlert();
-      })
-      .on('broadcast', { event: 'reaction' }, ({ payload }) => {
-        spawnFloatingReaction(payload.emoji);
-      })
-      .on('presence', { event: 'sync' }, () => {
-        updateViewers();
-      })
-      .on('presence', { event: 'join' }, ({ newPresences }) => {
-        newPresences.forEach(p => {
-          if (p.name !== myName) addSystemMsg(p.name + ' joined the party 👋');
-        });
-        // Send current video state to late joiners so they catch up instantly
-        if (videoLoaded && channel) {
-          channel.send({
-            type: 'broadcast',
-            event: 'video_sync',
-            payload: {
-              type: 'state_response',
-              src: video.src,
-              time: video.currentTime,
-              paused: video.paused
-            }
-          });
-        }
-        updateViewers();
-      })
-      .on('presence', { event: 'leave' }, ({ leftPresences }) => {
-        leftPresences.forEach(p => {
-          addSystemMsg(p.name + ' left the room');
-        });
-        updateViewers();
-      })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await channel.track({ name: myName, color: myColor, joinedAt: Date.now() });
-        }
-      });
+    ablyClient.connection.on('disconnected', () => {
+      console.warn('[Ably] Disconnected');
+      isChannelReady = false;
+      showToast('⚠️ Connection lost — reconnecting…');
+    });
+
+    ablyClient.connection.on('failed', () => {
+      console.error('[Ably] Connection failed');
+      isChannelReady = false;
+      showToast('❌ Could not connect to room');
+    });
+
+    // Main room channel for video sync, chat, reactions
+    channel = ablyClient.channels.get('room:' + roomId);
+
+    // Subscribe to video sync events — ignore our own messages
+    channel.subscribe('video_sync', (msg) => {
+      if (msg.clientId === ablyClient.auth.clientId) return;
+      handleRemoteSync(msg.data);
+    });
+
+    // Subscribe to chat messages
+    channel.subscribe('chat_message', (msg) => {
+      // Only render if it came from someone else
+      if (msg.clientId !== ablyClient.auth.clientId) {
+        renderMessage(msg.data, false);
+        handleUnreadBadge();
+      }
+    });
+
+    // Subscribe to reactions
+    channel.subscribe('reaction', (msg) => {
+      if (msg.clientId !== ablyClient.auth.clientId) {
+        spawnFloatingReaction(msg.data.emoji);
+      }
+    });
+
+    // Subscribe to presence (join/leave)
+    channel.subscribe('presence_update', (msg) => {
+      const p = msg.data;
+      if (p.action === 'join') {
+        viewers.set(p.clientId, { name: p.name, color: p.color });
+        addSystemMsg(p.name + ' joined the party 👋');
+        updateViewersUI();
+      } else if (p.action === 'leave') {
+        const name = viewers.get(p.clientId)?.name || 'Someone';
+        viewers.delete(p.clientId);
+        addSystemMsg(name + ' left the room');
+        updateViewersUI();
+      } else if (p.action === 'update') {
+        viewers.set(p.clientId, { name: p.name, color: p.color });
+        updateViewersUI();
+      }
+    });
+
   } catch (e) {
-    console.error('Supabase init failed:', e);
-    runLocalMode();
+    console.error('[Ably] Init failed:', e);
+    showToast('❌ Ably init failed — check your API key');
   }
 }
 
-function runLocalMode() {
-  addSystemMsg('Running in local mode — sync disabled');
+function publishPresence(action = 'join') {
+  if (!channel || !isChannelReady) return;
+  // Add ourselves to local viewers map too
+  viewers.set(ablyClient.auth.clientId || myName, { name: myName, color: myColor });
+  updateViewersUI();
+  channel.publish('presence_update', {
+    action,
+    clientId: ablyClient.auth.clientId || myName,
+    name: myName,
+    color: myColor
+  });
 }
 
 /* ══════════════════════════════════════════════
-    VIDEO PLAYER CONTROLS
+    VIDEO PLAYER
 ══════════════════════════════════════════════ */
-const video = document.getElementById('videoPlayer');
-const urlOverlay = document.getElementById('urlOverlay');
-const urlInput = document.getElementById('videoUrlInput');
-const progressFill = document.getElementById('progressFill');
-const progressTrack = document.getElementById('progressTrack');
-const currentTimeEl = document.getElementById('currentTime');
-const durationEl = document.getElementById('duration');
-const playPauseBtn = document.getElementById('playPauseBtn');
-const muteBtn = document.getElementById('muteBtn');
-const volSlider = document.getElementById('volSlider');
+const video          = document.getElementById('videoPlayer');
+const urlOverlay     = document.getElementById('urlOverlay');
+const urlInput       = document.getElementById('videoUrlInput');
+const progressFill   = document.getElementById('progressFill');
+const progressTrack  = document.getElementById('progressTrack');
+const currentTimeEl  = document.getElementById('currentTime');
+const durationEl     = document.getElementById('duration');
+const playPauseBtn   = document.getElementById('playPauseBtn');
+const muteBtn        = document.getElementById('muteBtn');
+const volSlider      = document.getElementById('volSlider');
 
 document.getElementById('loadVideoBtn').addEventListener('click', loadVideo);
 urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadVideo(); });
@@ -1076,76 +1139,40 @@ function loadVideo() {
   const url = urlInput.value.trim();
   if (!url) return;
   setupVideoSource(url);
-  addSystemMsg('Video loaded. Press play to start 🎬');
-  broadcastSync({ type: 'load', src: url });
+  addSystemMsg('Video loaded — press play to start 🎬');
+  broadcastSync({ type: 'load', src: url, title: document.getElementById('roomNameDisplay').textContent });
 }
 
-document.getElementById('uploadFileBtn').addEventListener('click', () => {
-  document.getElementById('fileUploadInput').click();
-});
-
-document.getElementById('fileUploadInput').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-
-  const uploadBtn = document.getElementById('uploadFileBtn');
-  const originalText = uploadBtn.textContent;
-
-  uploadBtn.textContent = '⏳ Uploading...';
-  uploadBtn.disabled = true;
-  addSystemMsg(`Uploading "${file.name}" to cloud storage...`);
-
-  const fileExt = file.name.split('.').pop();
-  const fileName = `${Math.random().toString(36).slice(2, 11)}.${fileExt}`;
-  const filePath = `${roomId}/${fileName}`;
-
-  try {
-    const { data, error } = await supabaseClient.storage
-      .from('movies')
-      .upload(filePath, file, { cacheControl: '3600', upsert: false });
-
-    if (error) throw error;
-
-    const { data: publicUrlData } = supabaseClient.storage
-      .from('movies')
-      .getPublicUrl(filePath);
-
-    const publicUrl = publicUrlData.publicUrl;
-    setupVideoSource(publicUrl);
-    addSystemMsg('Cloud upload complete! Movie loaded for everyone 🎬');
-    broadcastSync({ type: 'load', src: publicUrl });
-
-  } catch (err) {
-    console.error('Upload failed:', err);
-    showToast('❌ Cloud upload failed. Try a smaller file.');
-    addSystemMsg('Upload failed. Double check your bucket permissions.');
-  } finally {
-    uploadBtn.textContent = originalText;
-    uploadBtn.disabled = false;
-    e.target.value = '';
-  }
-});
-
-function setupVideoSource(url) {
-  video.src = url;
-  video.style.display = 'block';
-  urlOverlay.style.display = 'none';
-  videoLoaded = true;
-  video.load();
-}
+// Track whether video has actually started playing at least once
+// This prevents broadcasting pause events from initial load or failed autoplay
+let hasPlayedOnce = false;
 
 video.addEventListener('play', () => {
   updatePlayIcon(true);
+  hasPlayedOnce = true;
   if (!isSyncingFromRemote) broadcastSync({ type: 'play', time: video.currentTime });
 });
 
 video.addEventListener('pause', () => {
   updatePlayIcon(false);
-  if (!isSyncingFromRemote) broadcastSync({ type: 'pause', time: video.currentTime });
+  // Only broadcast pause if:
+  // 1. Not caused by remote sync
+  // 2. Video has actually played before (not initial load/failed autoplay)
+  // 3. Video is not just buffering (readyState check)
+  if (!isSyncingFromRemote && hasPlayedOnce && video.readyState >= 2) {
+    broadcastSync({ type: 'pause', time: video.currentTime });
+  }
 });
 
+// Debounce seek broadcasts — prevents feedback loop where
+// both clients keep telling each other to seek endlessly.
+let seekBroadcastTimer = null;
 video.addEventListener('seeked', () => {
-  if (!isSyncingFromRemote) broadcastSync({ type: 'seek', time: video.currentTime });
+  if (isSyncingFromRemote) return;
+  clearTimeout(seekBroadcastTimer);
+  seekBroadcastTimer = setTimeout(() => {
+    broadcastSync({ type: 'seek', time: video.currentTime });
+  }, 300);
 });
 
 video.addEventListener('timeupdate', updateProgress);
@@ -1154,10 +1181,9 @@ video.addEventListener('loadedmetadata', () => {
 });
 
 function updatePlayIcon(playing) {
-  const icon = document.getElementById('playIcon');
-  icon.setAttribute('d', playing
-    ? 'M6 19h4V5H6v14zm8-14v14h4V5h-4z'
-    : 'M5 3l14 9-14 9V3z');
+  document.getElementById('playIcon').setAttribute('d',
+    playing ? 'M6 19h4V5H6v14zm8-14v14h4V5h-4z' : 'M5 3l14 9-14 9V3z'
+  );
 }
 
 playPauseBtn.addEventListener('click', () => {
@@ -1172,7 +1198,7 @@ function skipVideo(sec) {
 
 progressTrack.addEventListener('click', e => {
   if (!videoLoaded || !video.duration) return;
-  const rect = progressTrack.getBoundingClientRect();
+  const rect  = progressTrack.getBoundingClientRect();
   const ratio = (e.clientX - rect.left) / rect.width;
   video.currentTime = ratio * video.duration;
 });
@@ -1180,7 +1206,7 @@ progressTrack.addEventListener('click', e => {
 function updateProgress() {
   if (!video.duration) return;
   const pct = (video.currentTime / video.duration) * 100;
-  progressFill.style.setProperty('width', pct + '%', 'important');
+  progressFill.style.width = pct + '%';
   progressTrack.setAttribute('aria-valuenow', Math.round(pct));
   currentTimeEl.textContent = fmtTime(video.currentTime);
 }
@@ -1189,11 +1215,9 @@ muteBtn.addEventListener('click', () => {
   video.muted = !video.muted;
   muteBtn.textContent = video.muted ? '🔇' : '🔊';
 });
-
 volSlider.addEventListener('input', () => {
   video.volume = volSlider.value;
-  video.muted = (video.volume === 0);
-  muteBtn.textContent = video.muted ? '🔇' : '🔊';
+  muteBtn.textContent = video.volume == 0 ? '🔇' : '🔊';
 });
 
 document.getElementById('fullscreenBtn').addEventListener('click', () => {
@@ -1202,201 +1226,312 @@ document.getElementById('fullscreenBtn').addEventListener('click', () => {
   else document.exitFullscreen?.();
 });
 
+function setupVideoSource(url) {
+  video.src = url;
+  video.classList.remove('video-hidden'); // show video
+  urlOverlay.style.display = 'none';
+  videoLoaded = true;
+  video.load();
+  if (url.includes('real-debrid.com') || url.includes('rdb.so')) {
+    showToast('🎬 Stream loaded — press play!');
+  }
+  watchForUnplayableVideo();
+}
+
+/* ── Detect "black screen but audio plays" ──
+   Some files (usually series in HEVC/x265 or MKV containers) decode their
+   audio track but not their video track in this browser. We catch that by
+   checking videoWidth once metadata/data arrives: if it stays 0 while the
+   file is otherwise loading, the video track can't be rendered here. */
+let unplayableTimer = null;
+function watchForUnplayableVideo() {
+  clearTimeout(unplayableTimer);
+  hideCodecWarning();
+
+  // Hard decode error (unsupported container/codec entirely).
+  video.onerror = () => {
+    const err = video.error;
+    // MEDIA_ERR_SRC_NOT_SUPPORTED (4) / decode error (3) → unplayable here.
+    if (!err || err.code === 3 || err.code === 4) showCodecWarning();
+  };
+
+  // Soft case: file loads & audio plays, but no video frame (videoWidth 0).
+  const check = () => {
+    if (video.readyState >= 2 && video.videoWidth === 0) showCodecWarning();
+  };
+  video.addEventListener('loadeddata', check, { once: true });
+  // Fallback timer in case loadeddata fires before the track is evaluated.
+  unplayableTimer = setTimeout(() => {
+    if (videoLoaded && video.readyState >= 2 && video.videoWidth === 0) {
+      showCodecWarning();
+    }
+  }, 6000);
+}
+
+function showCodecWarning() {
+  let el = document.getElementById('codecWarning');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'codecWarning';
+    el.style.cssText =
+      'position:absolute;inset:0;z-index:6;display:flex;flex-direction:column;' +
+      'align-items:center;justify-content:center;text-align:center;gap:0.6rem;' +
+      'padding:2rem;background:rgba(0,0,0,0.88);color:#fff;';
+    el.innerHTML =
+      '<div style="font-size:2.4rem">🎞️❌</div>' +
+      '<p style="font-weight:600;font-size:1rem;max-width:420px;line-height:1.5">' +
+      'This stream\'s video can\'t play in your browser (likely an HEVC / MKV file). ' +
+      'You\'re hearing audio but the picture won\'t render here.</p>' +
+      '<p style="color:var(--muted);font-size:0.82rem;max-width:420px">' +
+      'Go back and pick a stream tagged <b style="color:#4ade80">MP4</b> — those play everywhere.</p>' +
+      '<button onclick="window.history.back()" style="margin-top:0.4rem;background:var(--red);' +
+      'border:none;color:#fff;padding:0.55rem 1.4rem;border-radius:7px;font-weight:600;cursor:pointer">' +
+      '← Pick another stream</button>';
+    document.querySelector('.player-wrap').appendChild(el);
+  }
+  el.style.display = 'flex';
+}
+
+function hideCodecWarning() {
+  const el = document.getElementById('codecWarning');
+  if (el) el.style.display = 'none';
+}
+
 /* ══════════════════════════════════════════════
     SYNC BROADCAST
 ══════════════════════════════════════════════ */
 function broadcastSync(payload) {
-  if (!channel) return;
-  channel.send({ type: 'broadcast', event: 'video_sync', payload });
+  if (!channel || !isChannelReady) {
+    console.warn('[Sync] Channel not ready, dropping:', payload.type);
+    return;
+  }
+  channel.publish('video_sync', payload);
 }
 
 /* ══════════════════════════════════════════════
-    SYNC RECEIVER — handles all remote video events
-    Fixes:
-      1. Autoplay block → shows "Click to sync" overlay
-      2. Late joiners → state_response catches them up
+    SYNC RECEIVER
 ══════════════════════════════════════════════ */
 function handleRemoteSync(payload) {
   isSyncingFromRemote = true;
 
   if (payload.type === 'load' && payload.src) {
     setupVideoSource(payload.src);
+    if (payload.title) document.getElementById('roomNameDisplay').textContent = payload.title;
     addSystemMsg('A new video was loaded 🎬');
+    setTimeout(() => { isSyncingFromRemote = false; }, 300);
 
   } else if (payload.type === 'play') {
     if (Math.abs(video.currentTime - payload.time) > 1.5) {
       video.currentTime = payload.time;
     }
-    // Mute first so browser allows autoplay, then restore sound after 300ms
-    const wasMuted = video.muted;
+    // Always play muted first — browser allows muted autoplay without user gesture.
+    // Show the sync overlay so the guest clicks to unmute/confirm playback.
+    // This is the only reliable cross-browser approach.
     video.muted = true;
-    video.play().then(() => {
-      setTimeout(() => { video.muted = wasMuted; }, 300);
-    }).catch(() => {
-      // Even muted play failed — fall back to overlay
-      video.muted = wasMuted;
-      pendingRemotePlay = payload.time;
-      document.getElementById('syncOverlay').style.display = 'flex';
-    });
+    video.play()
+      .then(() => {
+        // Muted autoplay worked — show overlay so guest can click to unmute
+        pendingRemotePlay = null;
+        document.getElementById('syncOverlay').style.display = 'flex';
+        const small = document.querySelector('#syncOverlay small');
+        if (small) small.textContent = 'Host pressed play — click to unmute & join';
+      })
+      .catch(() => {
+        // Even muted autoplay failed — show overlay for manual start
+        pendingRemotePlay = payload.time;
+        document.getElementById('syncOverlay').style.display = 'flex';
+        const small = document.querySelector('#syncOverlay small');
+        if (small) small.textContent = 'Host is watching — click to join';
+      })
+      .finally(() => { isSyncingFromRemote = false; });
 
   } else if (payload.type === 'pause') {
     video.currentTime = payload.time;
     video.pause();
+    setTimeout(() => { isSyncingFromRemote = false; }, 200);
 
   } else if (payload.type === 'seek') {
     video.currentTime = payload.time;
+    setTimeout(() => { isSyncingFromRemote = false; }, 800);
 
-  } else if (payload.type === 'state_response') {
-    // Late joiner catch-up: load the video and jump to current position
-    if (!videoLoaded) {
-      setupVideoSource(payload.src);
-      addSystemMsg('Syncing you to the current video 🎬');
-    }
-    setTimeout(() => {
-      video.currentTime = payload.time;
-      if (!payload.paused) {
-        const wasMuted = video.muted;
-        video.muted = true;
-        video.play().then(() => {
-          setTimeout(() => { video.muted = wasMuted; }, 300);
-        }).catch(() => {
-          video.muted = wasMuted;
-          pendingRemotePlay = payload.time;
-          document.getElementById('syncOverlay').style.display = 'flex';
-        });
-      }
-    }, 500);
+  } else {
+    isSyncingFromRemote = false;
   }
-
-  setTimeout(() => { isSyncingFromRemote = false; }, 200);
 }
 
-// Called when the viewer clicks the sync overlay
 function dismissSyncOverlay() {
   document.getElementById('syncOverlay').style.display = 'none';
+  isSyncingFromRemote = true;
+
+  // Unmute and seek to pending time if any
+  video.muted = false;
   if (pendingRemotePlay !== null) {
     video.currentTime = pendingRemotePlay;
     pendingRemotePlay = null;
   }
-  video.play();
+
+  // Now play — this works because user just clicked (user gesture)
+  video.play()
+    .catch(() => {})
+    .finally(() => {
+      setTimeout(() => { isSyncingFromRemote = false; }, 200);
+    });
 }
 
 /* ══════════════════════════════════════════════
-    CHAT & REALTIME RENDER
+    CHAT
 ══════════════════════════════════════════════ */
 const messagesList = document.getElementById('messagesList');
-const msgInput = document.getElementById('msgInput');
-const sendBtn = document.getElementById('sendBtn');
+const msgInput     = document.getElementById('msgInput');
+const sendBtn      = document.getElementById('sendBtn');
 
 sendBtn.addEventListener('click', sendMessage);
 msgInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendMessage();
-  }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 
 function sendMessage() {
   const text = msgInput.value.trim();
   if (!text) return;
 
+  myName = usernameInput.value.trim() || myName;
+  localStorage.setItem('st_username', myName);
+
   const payload = {
-    text: text,
+    text,
     name: myName,
     color: myColor,
-    time: fmtTime(videoLoaded ? video.currentTime : 0, true)
+    time: fmtTime(videoLoaded ? video.currentTime : 0),
+    ts: Date.now()
   };
 
   renderMessage(payload, true);
-
-  if (channel) {
-    channel.send({ type: 'broadcast', event: 'chat_message', payload });
-  }
-
   msgInput.value = '';
   msgInput.style.height = '38px';
+
+  if (channel && isChannelReady) {
+    channel.publish('chat_message', payload);
+  } else {
+    showToast('⚠️ Not connected — message sent locally only');
+  }
 }
 
 function renderMessage(payload, isOwn) {
+  const isChatTabActive = document.getElementById('chatPanel').classList.contains('active');
   const group = document.createElement('div');
-  group.className = `msg-group ${isOwn ? 'msg-own' : ''}`;
-  const initials = payload.name.slice(0, 2).toUpperCase();
+  group.className = 'msg-group' + (isOwn ? ' msg-own' : '');
+
+  const initials = (payload.name || 'G').slice(0, 2).toUpperCase();
+  const time     = new Date(payload.ts || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
   group.innerHTML = `
     <div class="msg-header">
-      <div class="msg-avatar" style="background:${payload.color}; color:#000;">${initials}</div>
-      <span class="msg-name">${escapeHTML(payload.name)}</span>
-      <span class="msg-time">${payload.time}</span>
+      <div class="msg-avatar" style="background:${payload.color}" aria-hidden="true">${initials}</div>
+      <span class="msg-name" style="color:${payload.color}">${escapeHTML(payload.name)}</span>
+      <span class="msg-time">${time}</span>
     </div>
-    <div class="msg-bubble ${isOwn ? 'own' : ''}">${escapeHTML(payload.text)}</div>
+    <div class="msg-bubble${isOwn ? ' own' : ''}">${escapeHTML(payload.text)}</div>
   `;
+
   messagesList.appendChild(group);
   messagesList.scrollTop = messagesList.scrollHeight;
+
+  // Notification sound + badge for messages from others when tab not active
+  if (!isOwn) {
+    if (!isChatTabActive) {
+      handleUnreadBadge();
+    }
+    playChatSound();
+  }
+}
+
+function handleUnreadBadge() {
+  const isChatTabActive = document.getElementById('chatTabButton')?.classList.contains('active');
+  if (isChatTabActive) return;
+  unreadCount++;
+  const badge    = document.getElementById('tabNotificationBadge');
+  const mobBadge = document.getElementById('chatNotificationBadge');
+  if (badge)    { badge.textContent = unreadCount; badge.style.display = 'inline-flex'; }
+  if (mobBadge) { mobBadge.textContent = unreadCount; mobBadge.style.display = 'flex'; }
+}
+
+function clearUnreadBadge() {
+  unreadCount = 0;
+  const badge    = document.getElementById('tabNotificationBadge');
+  const mobBadge = document.getElementById('chatNotificationBadge');
+  if (badge)    { badge.textContent = ''; badge.style.display = 'none'; }
+  if (mobBadge) { mobBadge.textContent = ''; mobBadge.style.display = 'none'; }
+}
+
+function playChatSound() {
+  try {
+    const sound = document.getElementById('chatNotificationSound');
+    if (sound) { sound.currentTime = 0; sound.play().catch(() => {}); }
+  } catch(e) {}
 }
 
 function addSystemMsg(text) {
-  const div = document.createElement('div');
-  div.className = 'system-msg';
-  div.innerHTML = `<span>${escapeHTML(text)}</span>`;
-  messagesList.appendChild(div);
+  const el = document.createElement('div');
+  el.className = 'system-msg';
+  el.innerHTML = `<span>${escapeHTML(text)}</span>`;
+  messagesList.appendChild(el);
   messagesList.scrollTop = messagesList.scrollHeight;
 }
 
 /* ══════════════════════════════════════════════
-    PRESENCE STACK & VIEWERS LIST
+    VIEWERS UI
 ══════════════════════════════════════════════ */
-function updateViewers() {
-  if (!channel) return;
-  const state = channel.presenceState();
-  const presences = Object.values(state).flat().sort((a, b) => a.joinedAt - b.joinedAt);
+function updateViewersUI() {
+  const count = viewers.size;
+  document.getElementById('onlineCount').textContent = count + ' online';
 
-  document.getElementById('onlineCount').textContent = `${presences.length} online`;
-
+  // Topbar avatar stack
   const stack = document.getElementById('viewerStack');
   stack.innerHTML = '';
-  presences.slice(0, 3).forEach(p => {
+  const viewerArr = Array.from(viewers.values());
+  viewerArr.slice(0, 4).forEach(v => {
     const chip = document.createElement('div');
     chip.className = 'v-chip';
-    chip.style.backgroundColor = p.color;
-    chip.style.color = '#000';
-    chip.textContent = p.name.slice(0, 2).toUpperCase();
-    chip.title = p.name;
+    chip.style.background = v.color || '#555';
+    chip.textContent = (v.name || 'G').slice(0, 1).toUpperCase();
+    chip.title = v.name;
     stack.appendChild(chip);
   });
-  if (presences.length > 3) {
-    const countChip = document.createElement('div');
-    countChip.className = 'v-chip v-count';
-    countChip.textContent = `+${presences.length - 3}`;
-    stack.appendChild(countChip);
+  if (count > 4) {
+    const more = document.createElement('div');
+    more.className = 'v-chip v-count';
+    more.textContent = '+' + (count - 4);
+    stack.appendChild(more);
   }
 
-  const listContainer = document.getElementById('viewersList');
-  listContainer.innerHTML = '';
-  presences.forEach((p, idx) => {
+  // Viewers sidebar list
+  const list = document.getElementById('viewersList');
+  list.innerHTML = '';
+  viewerArr.forEach((v, i) => {
     const row = document.createElement('div');
     row.className = 'viewer-row';
-    const isHost = idx === 0;
+    const initials = (v.name || 'G').slice(0, 2).toUpperCase();
     row.innerHTML = `
-      <div class="v-avatar" style="background:${p.color}; color:#000;">${p.name.slice(0, 2).toUpperCase()}</div>
+      <div class="v-avatar" style="background:${v.color||'#555'}">${initials}</div>
       <div class="viewer-info">
-        <div class="viewer-name">${escapeHTML(p.name)} ${p.name === myName ? '(You)' : ''}</div>
-        <div class="viewer-status">Watching</div>
+        <div class="viewer-name">${escapeHTML(v.name || 'Guest')} ${v.name === myName ? '(You)' : ''}</div>
+        <div class="viewer-status">Watching now</div>
       </div>
-      ${isHost ? '<span class="host-badge">👑 Host</span>' : ''}
-      <div class="online-dot"></div>
+      ${i === 0 ? '<span class="host-badge">👑 Host</span>' : '<div class="online-dot"></div>'}
     `;
-    listContainer.appendChild(row);
+    list.appendChild(row);
   });
 }
 
 /* ══════════════════════════════════════════════
-    REACTION EFFECTS
+    REACTIONS
 ══════════════════════════════════════════════ */
 document.querySelectorAll('.reaction-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     const emoji = btn.getAttribute('data-emoji');
     spawnFloatingReaction(emoji);
-    if (channel) {
-      channel.send({ type: 'broadcast', event: 'reaction', payload: { emoji } });
+    if (channel && isChannelReady) {
+      channel.publish('reaction', { emoji });
     }
   });
 });
@@ -1405,144 +1540,148 @@ function spawnFloatingReaction(emoji) {
   const el = document.createElement('div');
   el.className = 'float-reaction';
   el.textContent = emoji;
-  const wrap = document.querySelector('.player-wrap');
-  const rect = wrap.getBoundingClientRect();
-  el.style.left = (rect.left + Math.random() * (rect.width - 40) + 20) + 'px';
-  el.style.top = (rect.top + rect.height - 60) + 'px';
+  el.style.left   = (20 + Math.random() * 60) + '%';
+  el.style.bottom = '80px';
   document.body.appendChild(el);
-  el.addEventListener('animationend', () => el.remove());
+  setTimeout(() => el.remove(), 2100);
 }
 
 /* ══════════════════════════════════════════════
-    TABS, MODAL, & HELPERS
+    TABS
 ══════════════════════════════════════════════ */
 document.querySelectorAll('.chat-tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.chat-tab').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
+    document.querySelectorAll('.chat-tab').forEach(t => {
+      t.classList.remove('active');
+      t.setAttribute('aria-selected', 'false');
+    });
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     tab.setAttribute('aria-selected', 'true');
-    document.getElementById(tab.getAttribute('data-tab') + 'Panel').classList.add('active');
-    if (tab.getAttribute('data-tab') === 'chat') {
-      unreadCount = 0;
-      const tabBadge = document.getElementById('tabNotificationBadge');
-      tabBadge.style.display = 'none';
-      tabBadge.textContent = '0';
-    }
+    document.getElementById(tab.dataset.tab + 'Panel').classList.add('active');
+    if (tab.dataset.tab === 'chat') clearUnreadBadge();
   });
 });
 
-const shareBtn = document.getElementById('shareBtn');
+/* ══════════════════════════════════════════════
+    MOBILE CHAT TOGGLE
+══════════════════════════════════════════════ */
+const mobileChatBubble = document.getElementById('mobileChatBubble');
+const chatSidebar      = document.getElementById('chatSidebar');
+const chatBackdrop     = document.getElementById('chatBackdrop');
+
+function openMobileChat() {
+  chatSidebar.classList.add('mobile-open');
+  if (chatBackdrop) chatBackdrop.classList.add('visible');
+  clearUnreadBadge();
+}
+
+function closeMobileChat() {
+  chatSidebar.classList.remove('mobile-open');
+  if (chatBackdrop) chatBackdrop.classList.remove('visible');
+}
+
+if (mobileChatBubble && chatSidebar) {
+  mobileChatBubble.addEventListener('click', () => {
+    const isOpen = chatSidebar.classList.contains('mobile-open');
+    isOpen ? closeMobileChat() : openMobileChat();
+  });
+}
+
+if (chatBackdrop) {
+  chatBackdrop.addEventListener('click', closeMobileChat);
+}
+
+/* ══════════════════════════════════════════════
+    SHARE MODAL
+══════════════════════════════════════════════ */
 const shareModal = document.getElementById('shareModal');
-const closeModalBtn = document.getElementById('closeModalBtn');
-const copyLinkBtn = document.getElementById('copyLinkBtn');
-
-shareBtn.addEventListener('click', () => shareModal.classList.add('open'));
-closeModalBtn.addEventListener('click', () => shareModal.classList.remove('open'));
+document.getElementById('shareBtn').addEventListener('click', () => shareModal.classList.add('open'));
+document.getElementById('closeModalBtn').addEventListener('click', () => shareModal.classList.remove('open'));
 shareModal.addEventListener('click', e => { if (e.target === shareModal) shareModal.classList.remove('open'); });
-
-copyLinkBtn.addEventListener('click', () => {
+document.getElementById('copyLinkBtn').addEventListener('click', () => {
   navigator.clipboard.writeText(location.href).then(() => {
-    showToast('✨ Invite link copied to clipboard!');
+    showToast('Link copied! 🔗 Send it to your babe');
     shareModal.classList.remove('open');
   });
 });
 
-function showToast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 3000);
-}
+/* ══════════════════════════════════════════════
+    SETTINGS BUTTON (stub)
+══════════════════════════════════════════════ */
+document.getElementById('settingsBtn').addEventListener('click', () => {
+  showToast('⚙️ Settings coming soon');
+});
 
-function fmtTime(seconds, includeHrs = false) {
-  if (isNaN(seconds)) return '0:00';
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const pad = num => String(num).padStart(2, '0');
-  if (h > 0 || includeHrs) return `${h}:${pad(m)}:${pad(s)}`;
-  return `${m}:${pad(s)}`;
-}
-
-function randomColor() {
-  const hue = Math.floor(Math.random() * 360);
-  return `hsl(${hue}, 85%, 75%)`;
+/* ══════════════════════════════════════════════
+    UTILITIES
+══════════════════════════════════════════════ */
+function fmtTime(s) {
+  if (!s || isNaN(s)) return '0:00';
+  const h   = Math.floor(s / 3600);
+  const m   = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60).toString().padStart(2, '0');
+  return h > 0 ? `${h}:${m.toString().padStart(2,'0')}:${sec}` : `${m}:${sec}`;
 }
 
 function escapeHTML(str) {
-  return str.replace(/[&<>'"]/g,
-    tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
-  );
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-/* ══════════════════════════════════════════════
-    MOBILE FLOATING CHAT BUBBLE
-══════════════════════════════════════════════ */
-const mobileBubble = document.getElementById('mobileChatBubble');
-const chatBadge = document.getElementById('chatNotificationBadge');
-const chatSound = document.getElementById('chatNotificationSound');
-const chatSidebar = document.getElementById('chatSidebar');
-const chatTabButton = document.getElementById('chatTabButton');
+function randomColor() {
+  const colors = ['#e50914','#1a73e8','#0f9d58','#f4b400','#9c27b0','#00bcd4','#ff5722','#e91e63'];
+  const c = colors[Math.floor(Math.random() * colors.length)];
+  localStorage.setItem('st_color', c);
+  return c;
+}
 
-let isChatOpenOnMobile = false;
-
-mobileBubble.addEventListener('click', (e) => {
-  e.stopPropagation();
-  isChatOpenOnMobile = !isChatOpenOnMobile;
-  if (isChatOpenOnMobile) {
-    chatSidebar.classList.add('open');
-    chatBadge.style.display = 'none';
-    unreadCount = 0;
-    const tabBadge = document.getElementById('tabNotificationBadge');
-    tabBadge.style.display = 'none';
-    tabBadge.textContent = '0';
-  } else {
-    chatSidebar.classList.remove('open');
-  }
-});
-
-document.addEventListener('click', (e) => {
-  if (window.innerWidth <= 700 && isChatOpenOnMobile) {
-    if (!chatSidebar.contains(e.target) && e.target !== mobileBubble) {
-      chatSidebar.classList.remove('open');
-      isChatOpenOnMobile = false;
-    }
-  }
-});
-
-function handleIncomingMessageAlert() {
-  const isMobile = window.innerWidth <= 700;
-  const isChatTabActive = chatTabButton.classList.contains('active');
-  const isUnread = (isMobile && !isChatOpenOnMobile) || (!isMobile && !isChatTabActive);
-
-  if (isUnread) {
-    unreadCount++;
-    const tabBadge = document.getElementById('tabNotificationBadge');
-    tabBadge.textContent = unreadCount;
-    tabBadge.style.display = 'inline-block';
-    if (isMobile) chatBadge.style.display = 'block';
-    chatSound.currentTime = 0;
-    chatSound.play().catch(err => console.log('Audio awaiting user interaction:', err));
-  }
+let toastTimer;
+const toastEl = document.getElementById('toast');
+function showToast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 3000);
 }
 
 /* ══════════════════════════════════════════════
     INIT
 ══════════════════════════════════════════════ */
 window.addEventListener('DOMContentLoaded', () => {
-  initSupabase();
+  initAbly();
 
   if (directStreamUrl) {
     const videoSourceInput = document.getElementById('videoUrlInput');
-    if (videoSourceInput) {
-      videoSourceInput.value = directStreamUrl;
-      setTimeout(() => {
-        setupVideoSource(directStreamUrl);
-        addSystemMsg('Movie loaded automatically from library registry 🎬');
-        broadcastSync({ type: 'load', src: directStreamUrl });
-      }, 800);
-    }
+    if (videoSourceInput) videoSourceInput.value = directStreamUrl;
+
+    // Load video immediately for everyone
+    setupVideoSource(directStreamUrl);
+    addSystemMsg('Movie loaded 🎬');
+
+    // Only broadcast load if we're the first person in the room (host).
+    // Guests already have the URL from the share link — they don't need
+    // to rebroadcast it back, which would cause the host's video to reload.
+    let attempts = 0;
+    const tryBroadcast = () => {
+      attempts++;
+      if (!isChannelReady) {
+        if (attempts < 50) setTimeout(tryBroadcast, 200);
+        else showToast('⚠️ Could not connect — check connection');
+        return;
+      }
+      // Only broadcast if we're the only viewer (we're the host)
+      if (viewers.size <= 1) {
+        broadcastSync({
+          type: 'load',
+          src: directStreamUrl,
+          title: directTitle || document.getElementById('roomNameDisplay').textContent
+        });
+      }
+      // Guests just load locally and stay silent — host is already playing
+    };
+    setTimeout(tryBroadcast, 500);
   }
 });
 </script>
