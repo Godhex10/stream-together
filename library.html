@@ -665,6 +665,21 @@ function getQualityRank(stream) {
   return ranks[q] || 2;
 }
 
+/* Parse video codec from full detail string */
+function getVideoCodec(stream) {
+  const full = getFullDetail(stream);
+  if (full.includes('X265') || full.includes('X.265') ||
+      full.includes('H265') || full.includes('H.265') ||
+      full.includes('HEVC')) return { label: 'x265', safe: false };
+  if (full.includes('X264') || full.includes('X.264') ||
+      full.includes('H264') || full.includes('H.264') ||
+      full.includes('AVC'))  return { label: 'x264', safe: true };
+  if (full.includes('AV1'))  return { label: 'AV1',  safe: false }; // limited support
+  if (full.includes('VP9'))  return { label: 'VP9',  safe: true };
+  if (full.includes('XVID') || full.includes('DIVX')) return { label: 'XviD', safe: false };
+  return { label: '', safe: true }; // unknown — assume safe
+}
+
 /* Parse audio codec from full detail string */
 function getAudioInfo(stream) {
   const full = getFullDetail(stream);
@@ -816,27 +831,33 @@ function renderStreamItems(streams, movie) {
       const badKeywords = ['TRAILER', 'SAMPLE', 'FEATURETTE', 'DELETED SCENE', 'EXTRAS', 'BONUS', 'BEHIND THE SCENES'];
       if (badKeywords.some(k => full.includes(k))) return false;
 
-      // Filter out H.265/HEVC streams — these show black screen on mobile
-      // and low-end devices without hardware GPU decoding support.
-      // H.264 (x264) works on every device and browser natively.
-      const isHEVC = full.includes('X265') || full.includes('X.265') ||
-                     full.includes('H265') || full.includes('H.265') ||
-                     full.includes('HEVC') || full.includes('HDR') ||
-                     full.includes('DV |') || full.includes('DV|') ||
-                     full.includes('DOLBY VISION') || full.includes('HDR10');
-      if (isHEVC) return false;
-
-      // Only allow 480p / 720p / 1080p. 4K/2160p is too heavy for mobile and
-      // old displays (decoder gives up → black screen); 360p / unlabeled are
-      // dropped too so the list only shows dependable, device-friendly res.
-      const quality = getQualityLabel(stream).toUpperCase();
-      if (!['480P', '720P', '1080P'].includes(quality)) return false;
+      // ONLY allow x264/H.264/AVC streams — guaranteed to play on
+      // every device and browser without GPU hardware decoding.
+      // x265/HEVC/AV1/VP9/XviD all cause black screen on mobile/low-end devices.
+      const full2 = full + (stream.behaviorHints?.filename || '').toUpperCase();
+      const isX264 = full2.includes('X264') || full2.includes('X.264') ||
+                     full2.includes('H264') || full2.includes('H.264') ||
+                     full2.includes('AVC');
+      const hasCodecInfo = full2.includes('X264') || full2.includes('X265') ||
+                           full2.includes('H264') || full2.includes('H265') ||
+                           full2.includes('HEVC') || full2.includes('AVC')  ||
+                           full2.includes('AV1')  || full2.includes('VP9')  ||
+                           full2.includes('XVID') || full2.includes('DIVX');
+      // If codec tag is present, must be x264. No codec tag = allow through (Nuvio HTTP streams)
+      if (hasCodecInfo && !isX264) return false;
 
       return true;
     });
 
     if (filtered.length === 0) {
-      streamList.innerHTML = `<div class="status-message">No clean streams found.<br><span style="font-size:0.8rem;color:var(--muted2)">All available streams were filtered out (no audio / too small).<br>Try a different movie.</span></div>`;
+      streamList.innerHTML = `
+        <div class="status-message">
+          No compatible streams found.<br>
+          <span style="font-size:0.8rem;color:var(--muted2)">
+            All available streams are x265/HEVC which don't play on mobile and low-end devices.<br>
+            Try a different episode or quality — some episodes have x264 versions available.
+          </span>
+        </div>`;
       return;
     }
 
@@ -861,13 +882,17 @@ function renderStreamItems(streams, movie) {
 
       if (!streamUrl) return;
 
-      // Build badge row: size + audio + seeders + source
+      // Build badge row: size + video codec + audio + seeders + source
+      const videoCodec = getVideoCodec(stream);
       const badges = [];
       if (sizeLabel) badges.push(
         `<span style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:#ddd;">💾 ${escapeHTML(sizeLabel)}</span>`
       );
+      if (videoCodec.label) badges.push(
+        `<span style="background:${videoCodec.safe ? 'rgba(34,197,94,0.1)' : 'rgba(229,9,20,0.15)'};border:1px solid ${videoCodec.safe ? 'rgba(34,197,94,0.25)' : 'rgba(229,9,20,0.4)'};border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:${videoCodec.safe ? '#4ade80' : '#ff6b6b'};" title="${videoCodec.safe ? 'Plays on all devices' : 'May show black screen on mobile/low-end devices'}">${escapeHTML(videoCodec.label)}</span>`
+      );
       if (audio.label) badges.push(
-        `<span style="background:${audio.ok ? 'rgba(34,197,94,0.12)' : 'rgba(229,9,20,0.15)'};border:1px solid ${audio.ok ? 'rgba(34,197,94,0.3)' : 'rgba(229,9,20,0.4)'};border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:${audio.ok ? '#4ade80' : '#ff6b6b'};">${escapeHTML(audio.label)}</span>`
+        `<span style="background:${audio.ok ? 'rgba(255,255,255,0.06)' : 'rgba(229,9,20,0.15)'};border:1px solid ${audio.ok ? 'rgba(255,255,255,0.12)' : 'rgba(229,9,20,0.4)'};border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:${audio.ok ? '#aaa' : '#ff6b6b'};">${escapeHTML(audio.label)}</span>`
       );
       if (seeders) badges.push(
         `<span style="color:var(--muted);font-size:0.65rem;">👥 ${seeders}</span>`
