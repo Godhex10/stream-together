@@ -8,6 +8,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.0.1/css/all.min.css" integrity="sha512-2SwdPD6INVrV/lHTZbO2nodKhrnDdJK9/kg2XD1r9uGqPo1cUbujc+IYdlYdEErWNu69gVcYgdxlmVmzTWnetw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
 <script src="https://cdn.ably.com/lib/ably.min-2.js"></script>
+<!-- HLS.js — needed for .m3u8 streams on Chrome/Firefox/Android -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>
 
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1226,14 +1228,51 @@ document.getElementById('fullscreenBtn').addEventListener('click', () => {
   else document.exitFullscreen?.();
 });
 
+let hlsInstance = null; // track active HLS.js instance
+
 function setupVideoSource(url) {
-  video.src = url;
-  video.classList.remove('video-hidden'); // show video
+  // Destroy any existing HLS instance first
+  if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
+
+  video.classList.remove('video-hidden');
   urlOverlay.style.display = 'none';
   videoLoaded = true;
-  video.load();
-  if (url.includes('real-debrid.com') || url.includes('rdb.so')) {
-    showToast('🎬 Stream loaded — press play!');
+
+  const isHLS = url.includes('.m3u8') || url.includes('m3u8');
+  const isHEVC = url.toUpperCase().includes('X265') || url.toUpperCase().includes('HEVC');
+
+  if (isHLS) {
+    // Use HLS.js for .m3u8 streams on Chrome/Firefox/Android
+    // Safari plays .m3u8 natively so we check first
+    if (Hls.isSupported()) {
+      hlsInstance = new Hls({ enableWorker: true });
+      hlsInstance.loadSource(url);
+      hlsInstance.attachMedia(video);
+      hlsInstance.on(Hls.Events.ERROR, (event, data) => {
+        if (data.fatal) {
+          console.error('[HLS.js] Fatal error:', data);
+          addSystemMsg('⚠️ HLS stream error — try a different stream');
+        }
+      });
+      showToast('🎬 HLS stream loaded via VidSrc — press play!');
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari — native HLS support
+      video.src = url;
+      video.load();
+      showToast('🎬 HLS stream loaded — press play!');
+    } else {
+      addSystemMsg('⚠️ Your browser does not support HLS streams');
+    }
+  } else {
+    // Regular MP4/direct URL
+    video.src = url;
+    video.load();
+    if (isHEVC) {
+      showToast('⚠️ H.265 stream — may show black on mobile/low-end devices');
+      addSystemMsg('⚠️ H.265 codec — go back and pick an x264 stream if you see black screen');
+    } else {
+      showToast('🎬 Stream loaded — press play!');
+    }
   }
 }
 

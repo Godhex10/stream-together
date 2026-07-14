@@ -559,6 +559,9 @@ function renderLocalMovies() {
 const TORRENTIO_BASE  = 'https://torrentio.strem.fun';
 const AIOSTREAMS_BASE = 'https://aiostreams.elfhosted.com/stremio/e5e59244-2ee5-411a-ad13-c7f1d9d9e2b9/eyJpIjoiWFVxdk1ZQnRsQVFWQXdlbGdnelMrZz09IiwiZSI6Ii9wMkZiRGVkaWhSVENTaFY3SkFJY2Z5LzZ4V1orNlN4alFnM2hMajVZZlk9IiwidCI6ImEifQ';
 const NUVIO_BASE      = 'https://nuviostreamsaddon.up.railway.app';
+const VIDSRC_SCRAPER  = 'https://vidsrc-scraper-production-dc31.up.railway.app';
+// TMDB key — used to convert IMDb IDs to TMDB IDs for VidSrc scraper
+const TMDB_KEY        = 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI4ZDZkOTE5NDEyMzA4MTdmNzgwN2Q2NDM3MzZlOGE0OSIsIm5iZiI6MS43NTIwNjU2MTU3ODY5OTk5ZTA4LCJzdWIiOiI2ODY2N2IyMzc2MGUxMmM5MDg1ODdiODAiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.cLsM-glyFIYi8kYfwWCUh_oa3dOFMvDiWlKX2AoNRiM';
 
 // Cache per imdbId — stores merged results from all sources
 const streamCache = {};
@@ -567,7 +570,8 @@ const streamCache = {};
 const SOURCE_LABELS = {
   torrentio:  { label: 'Torrentio',  color: '#f4b400' },
   aiostreams: { label: 'AIOStreams', color: '#9c27b0' },
-  nuvio:      { label: 'Nuvio ✅',   color: '#22c55e' } // green = no RD needed
+  nuvio:      { label: 'Nuvio ✅',   color: '#22c55e' },
+  vidsrc:     { label: 'VidSrc ✅',  color: '#00bcd4' } // cyan = HLS, no RD needed
 };
 
 /* Fetch streams from a single source safely — never throws */
@@ -588,30 +592,86 @@ async function fetchFromSource(url, sourceName) {
   }
 }
 
+/* ── TMDB ID lookup — VidSrc scraper needs TMDB IDs not IMDb IDs ── */
+const tmdbIdCache = {};
+async function getTmdbId(imdbId, mediaType) {
+  if (tmdbIdCache[imdbId]) return tmdbIdCache[imdbId];
+  try {
+    const res  = await fetch(
+      `https://api.themoviedb.org/3/find/${imdbId}?external_source=imdb_id`,
+      { headers: { 'Authorization': `Bearer ${TMDB_KEY}`, 'Content-Type': 'application/json' } }
+    );
+    const data = await res.json();
+    const arr  = mediaType === 'series' ? (data.tv_results || []) : (data.movie_results || []);
+    const id   = arr[0]?.id;
+    if (id) tmdbIdCache[imdbId] = id;
+    return id || null;
+  } catch(e) {
+    console.warn('[TMDB] ID lookup failed:', e.message);
+    return null;
+  }
+}
+
+/* Fetch HLS streams from VidSrc scraper */
+async function fetchFromVidSrc(imdbId, mediaType, season, episode) {
+  try {
+    const tmdbId = await getTmdbId(imdbId, mediaType);
+    if (!tmdbId) { console.warn('[VidSrc] No TMDB ID for', imdbId); return []; }
+
+    const type = mediaType === 'series' ? 'tv' : 'movie';
+    let url = `${VIDSRC_SCRAPER}/extract?tmdb_id=${tmdbId}&type=${type}`;
+    if (season)  url += `&season=${season}`;
+    if (episode) url += `&episode=${episode}`;
+
+    const controller = new AbortController();
+    const timeout    = setTimeout(() => controller.abort(), 30000);
+    const res  = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return [];
+
+    const data = await res.json();
+    if (!data.success || !data.results) return [];
+
+    const streams = [];
+    for (const [domain, result] of Object.entries(data.results)) {
+      if (result.hls_url && !result.error) {
+        streams.push({
+          name:       `VidSrc (${domain.replace('https://', '')})`,
+          title:      `HLS • ${domain.replace('https://', '')}`,
+          url:        result.hls_url,
+          _source:    'vidsrc',
+          _isHLS:     true,
+          _subtitles: result.subtitles || []
+        });
+      }
+    }
+    console.log(`[VidSrc] ${streams.length} HLS streams for ${imdbId}`);
+    return streams;
+  } catch(e) {
+    console.warn('[VidSrc] Failed:', e.message);
+    return [];
+  }
+}
+
 /* Fetch from Torrentio + AIOStreams + Nuvio in parallel */
 async function fetchAllStreams(imdbId) {
   if (streamCache[imdbId]) return streamCache[imdbId];
 
   console.log(`[Streams] Fetching from all sources for ${imdbId}…`);
 
-  const [torrentioStreams, aiostreamsStreams, nuvioStreams] = await Promise.all([
-    fetchFromSource(`${TORRENTIO_BASE}/stream/movie/${imdbId}.json`, 'torrentio'),
-    fetchFromSource(`${AIOSTREAMS_BASE}/stream/movie/${imdbId}.json`, 'aiostreams'),
-    fetchFromSource(`${NUVIO_BASE}/stream/movie/${imdbId}.json`, 'nuvio')
-  ]);
+  // VidSrc only — HLS streams, play on all devices, no Real-Debrid needed
+  const vidsrcStreams = await fetchFromVidSrc(imdbId, 'movie');
 
-  // Merge and deduplicate — Nuvio first (direct HTTP, no RD needed)
   const seen   = new Set();
   const merged = [];
-
-  for (const stream of [...nuvioStreams, ...torrentioStreams, ...aiostreamsStreams]) {
-    const key = stream.infoHash || stream.url || (stream.name + (stream.title || ''));
+  for (const stream of vidsrcStreams) {
+    const key = stream.url || stream.name;
     if (!key || seen.has(key)) continue;
     seen.add(key);
     merged.push(stream);
   }
 
-  console.log(`[Streams] Total: ${merged.length} (Nuvio: ${nuvioStreams.length}, Torrentio: ${torrentioStreams.length}, AIOStreams: ${aiostreamsStreams.length})`);
+  console.log(`[Streams] VidSrc: ${merged.length} streams for ${imdbId}`);
 
   streamCache[imdbId] = merged;
   return merged;
@@ -728,38 +788,12 @@ function getStreamUrl(stream) {
 
 /* Fetch best format badge for a movie card (lightweight — only checks) */
 async function fetchBestFormat(imdbId) {
-  if (!imdbId) return;
-  try {
-    // Just check Torrentio for the badge — fast, lightweight
-    const url    = `${TORRENTIO_BASE}/stream/movie/${imdbId}.json`;
-    const res    = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    const data   = await res.json();
-    const streams = data.streams || [];
-
-    let fmt = 'none';
-    if (streams.length > 0) {
-      const has1080 = streams.some(s => getQualityLabel(s) === '1080P');
-      const has4k   = streams.some(s => getQualityLabel(s) === '4K');
-      fmt = has4k ? '4k' : has1080 ? '1080p' : 'mkv';
-    }
-
-    streamCache[imdbId] = streams.map(s => ({ ...s, _source: 'torrentio' }));
-
-    const badge = document.getElementById('fmt_' + imdbId);
-    if (badge) {
-      if (fmt === 'none') {
-        badge.textContent = 'N/A'; badge.className = 'format-badge none';
-      } else if (fmt === '4k') {
-        badge.textContent = '4K'; badge.className = 'format-badge mp4';
-      } else if (fmt === '1080p') {
-        badge.textContent = 'HD'; badge.className = 'format-badge mp4';
-      } else {
-        badge.textContent = 'SD'; badge.className = 'format-badge mkv';
-      }
-    }
-  } catch (e) {
-    const badge = document.getElementById('fmt_' + imdbId);
-    if (badge) { badge.textContent = '?'; badge.className = 'format-badge none'; }
+  // VidSrc-only — show HLS badge on all cards
+  // We don't pre-fetch streams for badges since VidSrc takes time to scrape
+  const badge = document.getElementById('fmt_' + imdbId);
+  if (badge) {
+    badge.textContent = 'HLS';
+    badge.className   = 'format-badge mp4'; // green = plays everywhere
   }
 }
 
@@ -769,11 +803,11 @@ async function fetchBestFormat(imdbId) {
 async function openStreamPicker(movie) {
   selectedMovie = movie;
   document.getElementById('streamModalTitle').textContent = movie.name || movie.title;
-  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio + AIOStreams + Nuvio in parallel…';
+  document.getElementById('streamModalSub').textContent = '🔍 Fetching streams from VidSrc…';
   streamList.innerHTML = `
     <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
       <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
-      Searching Torrentio, AIOStreams & Nuvio…
+      Fetching from VidSrc…
     </div>`;
   streamModal.classList.add('open');
 
@@ -852,10 +886,10 @@ function renderStreamItems(streams, movie) {
     if (filtered.length === 0) {
       streamList.innerHTML = `
         <div class="status-message">
-          No compatible streams found.<br>
+          No VidSrc streams found for this title.<br>
           <span style="font-size:0.8rem;color:var(--muted2)">
-            All available streams are x265/HEVC which don't play on mobile and low-end devices.<br>
-            Try a different episode or quality — some episodes have x264 versions available.
+            VidSrc may not have this movie or episode yet.<br>
+            Try a different episode or check back later.
           </span>
         </div>`;
       return;
@@ -924,58 +958,19 @@ function renderStreamItems(streams, movie) {
         e.stopPropagation();
         if (playBtn.dataset.loading === 'true') return;
         playBtn.dataset.loading = 'true';
+        playBtn.textContent = '⏳ Loading…';
         streamModal.classList.remove('open');
 
         try {
-          let finalUrl;
-          const isNuvio = stream._source === 'nuvio';
-
-          if (isNuvio && streamUrl && streamUrl.startsWith('http')) {
-            // Nuvio streams are direct HTTP URLs — no Real-Debrid needed at all
-            playBtn.textContent = '⏳ Loading…';
-            console.log('[Nuvio] Direct HTTP stream — bypassing RD');
-            finalUrl = streamUrl;
-
-          } else if (isMagnet(streamUrl)) {
-            // Torrent magnet — use RD with auto-retry across all magnets
-            playBtn.textContent = '⏳ Trying streams…';
-
-            const allStreams  = streamCache[movie.id] || [];
-            const allMagnets  = allStreams
-              .filter(s => s._source !== 'nuvio') // only magnet-based sources
-              .map(s => getStreamUrl(s))
-              .filter(u => u && isMagnet(u));
-
-            // Clicked stream goes first
-            const clickedIdx = allMagnets.indexOf(streamUrl);
-            if (clickedIdx > 0) {
-              allMagnets.splice(clickedIdx, 1);
-              allMagnets.unshift(streamUrl);
-            } else if (clickedIdx === -1) {
-              allMagnets.unshift(streamUrl);
-            }
-
-            console.log(`[RD] Sending ${allMagnets.length} magnets for auto-retry`);
-            finalUrl = await resolveWithRetry(allMagnets);
-
-          } else {
-            // Direct HTTP URL from non-Nuvio source — unrestrict via RD
-            playBtn.textContent = '⏳ Resolving…';
-            finalUrl = await resolveStreamUrl(streamUrl);
-          }
-
-          if (!finalUrl) throw new Error('No playable URL returned');
-          launchRoom(finalUrl, movie.name || movie.title);
-
+          // VidSrc streams are direct HLS URLs — no Real-Debrid needed
+          if (!streamUrl) throw new Error('No stream URL available');
+          launchRoom(streamUrl, movie.name || movie._fullTitle || movie.title);
         } catch(err) {
-          console.error('Stream resolve failed:', err);
+          console.error('Stream launch failed:', err);
           streamModal.classList.add('open');
           playBtn.textContent = '❌ Failed — retry';
           playBtn.dataset.loading = 'false';
-          showStreamError(err.exhausted
-            ? `All ${err.tried || 'available'} torrent streams are blocked. Try a Nuvio ✅ stream instead.`
-            : err.message
-          );
+          showStreamError(err.message);
         }
       }
 
@@ -1127,20 +1122,21 @@ async function openSeriesStreamPicker(series, season, episode, epTitle) {
   streamList.innerHTML = `
     <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
       <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
-      Searching Torrentio, AIOStreams & Nuvio…
+      Fetching from VidSrc…
     </div>`;
   streamModal.classList.add('open');
 
   try {
-    const [torrentioStreams, aioStreams, nuvioStreams] = await Promise.all([
-      fetchFromSource(`${TORRENTIO_BASE}/stream/series/${streamId}.json`, 'torrentio'),
-      fetchFromSource(`${AIOSTREAMS_BASE}/stream/series/${streamId}.json`, 'aiostreams'),
-      fetchFromSource(`${NUVIO_BASE}/stream/series/${streamId}.json`, 'nuvio')
-    ]);
+    // VidSrc only
+    const vidsrcStreams = await fetchFromVidSrc(
+      series.id, 'series',
+      ep.season || selectedSeason,
+      ep.episode || ep.number || 1
+    );
 
     const seen = new Set();
     const merged = [];
-    for (const s of [...nuvioStreams, ...torrentioStreams, ...aioStreams]) {
+    for (const s of vidsrcStreams) {
       const key = s.infoHash || s.url || s.name;
       if (!key || seen.has(key)) continue;
       seen.add(key);
@@ -1156,7 +1152,7 @@ async function openSeriesStreamPicker(series, season, episode, epTitle) {
     }
 
     document.getElementById('streamModalSub').textContent =
-      `${merged.length} streams found — Nuvio ✅ = no RD needed`;
+      `${merged.length} streams found — HLS streams, play on all devices`;
 
     renderStreamItems(merged, { ...series, id: streamId, name: fullTitle, _fullTitle: fullTitle });
 
