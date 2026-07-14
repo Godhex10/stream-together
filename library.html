@@ -630,7 +630,7 @@ async function fetchFromVidSrc(imdbId, mediaType, season, episode) {
     if (!res.ok) return [];
 
     const data = await res.json();
-    if (!data.success || !data.results) return [];
+    if (!data.results) return [];
 
     const streams = [];
     for (const [domain, result] of Object.entries(data.results)) {
@@ -659,24 +659,26 @@ async function fetchAllStreams(imdbId) {
 
   console.log(`[Streams] Fetching from all sources for ${imdbId}…`);
 
-  const [torrentioStreams, aiostreamsStreams, nuvioStreams] = await Promise.all([
+  const [torrentioStreams, aiostreamsStreams, nuvioStreams, vidsrcStreams] = await Promise.all([
     fetchFromSource(`${TORRENTIO_BASE}/stream/movie/${imdbId}.json`, 'torrentio'),
     fetchFromSource(`${AIOSTREAMS_BASE}/stream/movie/${imdbId}.json`, 'aiostreams'),
-    fetchFromSource(`${NUVIO_BASE}/stream/movie/${imdbId}.json`, 'nuvio')
+    fetchFromSource(`${NUVIO_BASE}/stream/movie/${imdbId}.json`, 'nuvio'),
+    fetchFromVidSrc(imdbId, 'movie')
   ]);
 
-  // Nuvio first — direct HTTP, no RD needed
+  // Merge and deduplicate
+  // VidSrc and Nuvio first — direct HLS/HTTP, no RD needed, play on all devices
   const seen   = new Set();
   const merged = [];
 
-  for (const stream of [...nuvioStreams, ...torrentioStreams, ...aiostreamsStreams]) {
+  for (const stream of [...vidsrcStreams, ...nuvioStreams, ...torrentioStreams, ...aiostreamsStreams]) {
     const key = stream.infoHash || stream.url || (stream.name + (stream.title || ''));
     if (!key || seen.has(key)) continue;
     seen.add(key);
     merged.push(stream);
   }
 
-  console.log(`[Streams] Total: ${merged.length} (Nuvio: ${nuvioStreams.length}, Torrentio: ${torrentioStreams.length}, AIOStreams: ${aiostreamsStreams.length})`);
+  console.log(`[Streams] Total: ${merged.length} (VidSrc: ${vidsrcStreams.length}, Nuvio: ${nuvioStreams.length}, Torrentio: ${torrentioStreams.length}, AIOStreams: ${aiostreamsStreams.length})`);
 
   streamCache[imdbId] = merged;
   return merged;
@@ -795,6 +797,7 @@ function getStreamUrl(stream) {
 async function fetchBestFormat(imdbId) {
   if (!imdbId) return;
   try {
+    // Just check Torrentio for the badge — fast, lightweight
     const url    = `${TORRENTIO_BASE}/stream/movie/${imdbId}.json`;
     const res    = await fetch(url, { signal: AbortSignal.timeout(6000) });
     const data   = await res.json();
@@ -804,7 +807,7 @@ async function fetchBestFormat(imdbId) {
     if (streams.length > 0) {
       const has1080 = streams.some(s => getQualityLabel(s) === '1080P');
       const has4k   = streams.some(s => getQualityLabel(s) === '4K');
-      fmt = has4k ? '4k' : has1080 ? '1080p' : 'sd';
+      fmt = has4k ? '4k' : has1080 ? '1080p' : 'mkv';
     }
 
     streamCache[imdbId] = streams.map(s => ({ ...s, _source: 'torrentio' }));
@@ -833,7 +836,7 @@ async function fetchBestFormat(imdbId) {
 async function openStreamPicker(movie) {
   selectedMovie = movie;
   document.getElementById('streamModalTitle').textContent = movie.name || movie.title;
-  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio, AIOStreams & Nuvio…';
+  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio + AIOStreams + Nuvio in parallel…';
   streamList.innerHTML = `
     <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
       <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
@@ -880,6 +883,9 @@ function renderStreamItems(streams, movie) {
     // - Likely trailers/samples (very small files under 100MB)
     // - Scene/sample releases with keywords indicating no full movie
     const filtered = streams.filter(stream => {
+      // VidSrc HLS streams are always playable — never filter them out
+      if (stream._source === 'vidsrc') return !!getStreamUrl(stream);
+
       const audio = getAudioInfo(stream);
       if (!audio.ok) return false; // remove no-audio streams
 
@@ -918,8 +924,8 @@ function renderStreamItems(streams, movie) {
         <div class="status-message">
           No compatible streams found.<br>
           <span style="font-size:0.8rem;color:var(--muted2)">
-            All streams are x265/HEVC or have no audio.<br>
-            Try a different movie or episode.
+            All available streams are x265/HEVC which don't play on mobile and low-end devices.<br>
+            Try a different episode or quality — some episodes have x264 versions available.
           </span>
         </div>`;
       return;
@@ -992,21 +998,26 @@ function renderStreamItems(streams, movie) {
 
         try {
           let finalUrl;
-          const isNuvio = stream._source === 'nuvio';
+          const isNuvio  = stream._source === 'nuvio';
+          const isVidsrc = stream._source === 'vidsrc';
 
-          if (isNuvio && streamUrl && streamUrl.startsWith('http')) {
+          if ((isNuvio || isVidsrc) && streamUrl && streamUrl.startsWith('http')) {
+            // Nuvio / VidSrc are direct HTTP/HLS URLs — no Real-Debrid needed at all
             playBtn.textContent = '⏳ Loading…';
+            console.log(`[${stream._source}] Direct stream — bypassing RD`);
             finalUrl = streamUrl;
 
           } else if (isMagnet(streamUrl)) {
+            // Torrent magnet — use RD with auto-retry across all magnets
             playBtn.textContent = '⏳ Trying streams…';
 
-            const allStreams = streamCache[movie.id] || [];
-            const allMagnets = allStreams
-              .filter(s => s._source !== 'nuvio')
+            const allStreams  = streamCache[movie.id] || [];
+            const allMagnets  = allStreams
+              .filter(s => s._source !== 'nuvio' && s._source !== 'vidsrc') // only magnet-based sources
               .map(s => getStreamUrl(s))
               .filter(u => u && isMagnet(u));
 
+            // Clicked stream goes first
             const clickedIdx = allMagnets.indexOf(streamUrl);
             if (clickedIdx > 0) {
               allMagnets.splice(clickedIdx, 1);
@@ -1019,12 +1030,13 @@ function renderStreamItems(streams, movie) {
             finalUrl = await resolveWithRetry(allMagnets);
 
           } else {
+            // Direct HTTP URL from non-Nuvio source — unrestrict via RD
             playBtn.textContent = '⏳ Resolving…';
             finalUrl = await resolveStreamUrl(streamUrl);
           }
 
           if (!finalUrl) throw new Error('No playable URL returned');
-          launchRoom(finalUrl, movie.name || movie._fullTitle || movie.title);
+          launchRoom(finalUrl, movie.name || movie.title);
 
         } catch(err) {
           console.error('Stream resolve failed:', err);
@@ -1032,7 +1044,7 @@ function renderStreamItems(streams, movie) {
           playBtn.textContent = '❌ Failed — retry';
           playBtn.dataset.loading = 'false';
           showStreamError(err.exhausted
-            ? `All streams blocked by Real-Debrid. Try a Nuvio ✅ stream instead.`
+            ? `All ${err.tried || 'available'} torrent streams are blocked. Try a Nuvio ✅ stream instead.`
             : err.message
           );
         }
@@ -1191,15 +1203,16 @@ async function openSeriesStreamPicker(series, season, episode, epTitle) {
   streamModal.classList.add('open');
 
   try {
-    const [torrentioStreams, aioStreams, nuvioStreams] = await Promise.all([
+    const [torrentioStreams, aioStreams, nuvioStreams, vidsrcStreams] = await Promise.all([
       fetchFromSource(`${TORRENTIO_BASE}/stream/series/${streamId}.json`, 'torrentio'),
       fetchFromSource(`${AIOSTREAMS_BASE}/stream/series/${streamId}.json`, 'aiostreams'),
-      fetchFromSource(`${NUVIO_BASE}/stream/series/${streamId}.json`, 'nuvio')
+      fetchFromSource(`${NUVIO_BASE}/stream/series/${streamId}.json`, 'nuvio'),
+      fetchFromVidSrc(series.id, 'series', season, episode)
     ]);
 
     const seen = new Set();
     const merged = [];
-    for (const s of [...nuvioStreams, ...torrentioStreams, ...aioStreams]) {
+    for (const s of [...vidsrcStreams, ...nuvioStreams, ...torrentioStreams, ...aioStreams]) {
       const key = s.infoHash || s.url || s.name;
       if (!key || seen.has(key)) continue;
       seen.add(key);
