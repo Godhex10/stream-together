@@ -989,29 +989,26 @@ const ABLY_KEY = 'ZPrVhg.ayhdDQ:Cn1thcvZc03KfcHFx0tqB_OWnZS984NFsRWejNJZXR0';
 /* ══════════════════════════════════════════════
     ROOM SETUP
 ══════════════════════════════════════════════ */
-const params = new URLSearchParams(location.search);
-let roomId = params.get('room');
+const params       = new URLSearchParams(location.search);
+let roomId         = params.get('room');
 if (!roomId) {
   roomId = 'room_' + Math.random().toString(36).slice(2, 9);
   const newUrl = new URL(location.href);
   newUrl.searchParams.set('room', roomId);
   history.replaceState({}, '', newUrl.toString());
 }
-
 const directStreamUrl = params.get('stream');
 const directTitle     = params.get('title');
-if (directTitle) {
-  document.getElementById('roomNameDisplay').textContent = directTitle;
-}
+if (directTitle) document.getElementById('roomNameDisplay').textContent = directTitle;
 
-let myName   = localStorage.getItem('st_username') || 'Guest_' + Math.floor(Math.random() * 900 + 100);
-let myColor  = localStorage.getItem('st_color') || randomColor();
+let myName  = localStorage.getItem('st_username') || 'Guest_' + Math.floor(Math.random() * 900 + 100);
+let myColor = localStorage.getItem('st_color')    || randomColor();
 let isSyncingFromRemote = false;
 let videoLoaded         = false;
+let hasPlayedOnce       = false;
 let unreadCount         = 0;
 let pendingRemotePlay   = null;
 
-// Viewers presence map: clientId -> { name, color }
 const viewers = new Map();
 
 document.getElementById('roomIdDisplay').textContent = 'Room: ' + roomId;
@@ -1023,16 +1020,14 @@ usernameInput.addEventListener('change', () => {
   myName = usernameInput.value.trim() || 'Guest_' + Math.floor(Math.random() * 900 + 100);
   usernameInput.value = myName;
   localStorage.setItem('st_username', myName);
-  publishPresence();
-  addSystemMsg('You changed your name to ' + myName);
+  publishPresence('update');
 });
 
 /* ══════════════════════════════════════════════
     ABLY CLIENT
 ══════════════════════════════════════════════ */
-let ablyClient  = null;
-let channel     = null;
-let presenceCh  = null;
+let ablyClient     = null;
+let channel        = null;
 let isChannelReady = false;
 
 function initAbly() {
@@ -1043,47 +1038,40 @@ function initAbly() {
       console.log('[Ably] Connected ✅');
       isChannelReady = true;
       showToast('✅ Connected to room');
-      publishPresence();
+      publishPresence('join');
     });
-
     ablyClient.connection.on('disconnected', () => {
-      console.warn('[Ably] Disconnected');
       isChannelReady = false;
       showToast('⚠️ Connection lost — reconnecting…');
     });
-
     ablyClient.connection.on('failed', () => {
-      console.error('[Ably] Connection failed');
       isChannelReady = false;
       showToast('❌ Could not connect to room');
     });
 
-    // Main room channel for video sync, chat, reactions
     channel = ablyClient.channels.get('room:' + roomId);
 
-    // Subscribe to video sync events — ignore our own messages
+    // Video sync — ignore own messages
     channel.subscribe('video_sync', (msg) => {
       if (msg.clientId === ablyClient.auth.clientId) return;
       handleRemoteSync(msg.data);
     });
 
-    // Subscribe to chat messages
+    // Chat messages
     channel.subscribe('chat_message', (msg) => {
-      // Only render if it came from someone else
-      if (msg.clientId !== ablyClient.auth.clientId) {
-        renderMessage(msg.data, false);
-        handleUnreadBadge();
-      }
+      if (msg.clientId === ablyClient.auth.clientId) return;
+      renderMessage(msg.data, false);
+      handleUnreadBadge();
+      playChatSound();
     });
 
-    // Subscribe to reactions
+    // Reactions
     channel.subscribe('reaction', (msg) => {
-      if (msg.clientId !== ablyClient.auth.clientId) {
-        spawnFloatingReaction(msg.data.emoji);
-      }
+      if (msg.clientId === ablyClient.auth.clientId) return;
+      spawnFloatingReaction(msg.data.emoji);
     });
 
-    // Subscribe to presence (join/leave)
+    // Presence
     channel.subscribe('presence_update', (msg) => {
       const p = msg.data;
       if (p.action === 'join') {
@@ -1103,36 +1091,33 @@ function initAbly() {
 
   } catch (e) {
     console.error('[Ably] Init failed:', e);
-    showToast('❌ Ably init failed — check your API key');
+    showToast('❌ Ably init failed — check API key');
   }
 }
 
-function publishPresence(action = 'join') {
+function publishPresence(action) {
   if (!channel || !isChannelReady) return;
-  // Add ourselves to local viewers map too
-  viewers.set(ablyClient.auth.clientId || myName, { name: myName, color: myColor });
+  const myClientId = ablyClient.auth.clientId || myName;
+  viewers.set(myClientId, { name: myName, color: myColor });
   updateViewersUI();
   channel.publish('presence_update', {
-    action,
-    clientId: ablyClient.auth.clientId || myName,
-    name: myName,
-    color: myColor
+    action, clientId: myClientId, name: myName, color: myColor
   });
 }
 
 /* ══════════════════════════════════════════════
     VIDEO PLAYER
 ══════════════════════════════════════════════ */
-const video          = document.getElementById('videoPlayer');
-const urlOverlay     = document.getElementById('urlOverlay');
-const urlInput       = document.getElementById('videoUrlInput');
-const progressFill   = document.getElementById('progressFill');
-const progressTrack  = document.getElementById('progressTrack');
-const currentTimeEl  = document.getElementById('currentTime');
-const durationEl     = document.getElementById('duration');
-const playPauseBtn   = document.getElementById('playPauseBtn');
-const muteBtn        = document.getElementById('muteBtn');
-const volSlider      = document.getElementById('volSlider');
+const video         = document.getElementById('videoPlayer');
+const urlOverlay    = document.getElementById('urlOverlay');
+const urlInput      = document.getElementById('videoUrlInput');
+const progressFill  = document.getElementById('progressFill');
+const progressTrack = document.getElementById('progressTrack');
+const currentTimeEl = document.getElementById('currentTime');
+const durationEl    = document.getElementById('duration');
+const playPauseBtn  = document.getElementById('playPauseBtn');
+const muteBtn       = document.getElementById('muteBtn');
+const volSlider     = document.getElementById('volSlider');
 
 document.getElementById('loadVideoBtn').addEventListener('click', loadVideo);
 urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadVideo(); });
@@ -1145,34 +1130,27 @@ function loadVideo() {
   broadcastSync({ type: 'load', src: url, title: document.getElementById('roomNameDisplay').textContent });
 }
 
-// Track whether video has actually started playing at least once
-// This prevents broadcasting pause events from initial load or failed autoplay
-let hasPlayedOnce = false;
-
+// Track play — only broadcast if user initiated
 video.addEventListener('play', () => {
   updatePlayIcon(true);
   hasPlayedOnce = true;
   if (!isSyncingFromRemote) broadcastSync({ type: 'play', time: video.currentTime });
 });
 
+// Track pause — only broadcast genuine user pauses
 video.addEventListener('pause', () => {
   updatePlayIcon(false);
-  // Only broadcast pause if:
-  // 1. Not caused by remote sync
-  // 2. Video has actually played before (not initial load/failed autoplay)
-  // 3. Video is not just buffering (readyState check)
   if (!isSyncingFromRemote && hasPlayedOnce && video.readyState >= 2) {
     broadcastSync({ type: 'pause', time: video.currentTime });
   }
 });
 
-// Debounce seek broadcasts — prevents feedback loop where
-// both clients keep telling each other to seek endlessly.
-let seekBroadcastTimer = null;
+// Seek — debounced to prevent feedback loop
+let seekTimer = null;
 video.addEventListener('seeked', () => {
   if (isSyncingFromRemote) return;
-  clearTimeout(seekBroadcastTimer);
-  seekBroadcastTimer = setTimeout(() => {
+  clearTimeout(seekTimer);
+  seekTimer = setTimeout(() => {
     broadcastSync({ type: 'seek', time: video.currentTime });
   }, 300);
 });
@@ -1201,8 +1179,7 @@ function skipVideo(sec) {
 progressTrack.addEventListener('click', e => {
   if (!videoLoaded || !video.duration) return;
   const rect  = progressTrack.getBoundingClientRect();
-  const ratio = (e.clientX - rect.left) / rect.width;
-  video.currentTime = ratio * video.duration;
+  video.currentTime = ((e.clientX - rect.left) / rect.width) * video.duration;
 });
 
 function updateProgress() {
@@ -1228,48 +1205,38 @@ document.getElementById('fullscreenBtn').addEventListener('click', () => {
   else document.exitFullscreen?.();
 });
 
-let hlsInstance = null; // track active HLS.js instance
+/* ══════════════════════════════════════════════
+    VIDEO SOURCE SETUP — handles MP4 + HLS
+══════════════════════════════════════════════ */
+let hlsInstance = null;
 
 function setupVideoSource(url) {
-  // Destroy any existing HLS instance first
   if (hlsInstance) { hlsInstance.destroy(); hlsInstance = null; }
 
   video.classList.remove('video-hidden');
   urlOverlay.style.display = 'none';
-  videoLoaded = true;
+  videoLoaded  = true;
+  hasPlayedOnce = false;
 
-  const isHLS = url.includes('.m3u8') || url.includes('m3u8');
-  const isHEVC = url.toUpperCase().includes('X265') || url.toUpperCase().includes('HEVC');
+  const isHLS  = url.includes('.m3u8');
+  const isHEVC = /x265|h265|hevc/i.test(url);
 
-  if (isHLS) {
-    // Use HLS.js for .m3u8 streams on Chrome/Firefox/Android
-    // Safari plays .m3u8 natively so we check first
-    if (Hls.isSupported()) {
-      hlsInstance = new Hls({ enableWorker: true });
-      hlsInstance.loadSource(url);
-      hlsInstance.attachMedia(video);
-      hlsInstance.on(Hls.Events.ERROR, (event, data) => {
-        if (data.fatal) {
-          console.error('[HLS.js] Fatal error:', data);
-          addSystemMsg('⚠️ HLS stream error — try a different stream');
-        }
-      });
-      showToast('🎬 HLS stream loaded via VidSrc — press play!');
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari — native HLS support
-      video.src = url;
-      video.load();
-      showToast('🎬 HLS stream loaded — press play!');
-    } else {
-      addSystemMsg('⚠️ Your browser does not support HLS streams');
-    }
+  if (isHLS && typeof Hls !== 'undefined' && Hls.isSupported()) {
+    hlsInstance = new Hls({ enableWorker: true });
+    hlsInstance.loadSource(url);
+    hlsInstance.attachMedia(video);
+    hlsInstance.on(Hls.Events.ERROR, (_, data) => {
+      if (data.fatal) addSystemMsg('⚠️ HLS stream error — try a different stream');
+    });
+    showToast('🎬 HLS stream loaded — press play!');
+  } else if (isHLS && video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = url; video.load();
+    showToast('🎬 HLS stream loaded — press play!');
   } else {
-    // Regular MP4/direct URL
-    video.src = url;
-    video.load();
+    video.src = url; video.load();
     if (isHEVC) {
-      showToast('⚠️ H.265 stream — may show black on mobile/low-end devices');
-      addSystemMsg('⚠️ H.265 codec — go back and pick an x264 stream if you see black screen');
+      showToast('⚠️ H.265 stream — may show black on some devices');
+      addSystemMsg('⚠️ H.265 codec detected — if you see black screen pick an x264 stream');
     } else {
       showToast('🎬 Stream loaded — press play!');
     }
@@ -1277,19 +1244,13 @@ function setupVideoSource(url) {
 }
 
 /* ══════════════════════════════════════════════
-    SYNC BROADCAST
+    SYNC BROADCAST & RECEIVE
 ══════════════════════════════════════════════ */
 function broadcastSync(payload) {
-  if (!channel || !isChannelReady) {
-    console.warn('[Sync] Channel not ready, dropping:', payload.type);
-    return;
-  }
+  if (!channel || !isChannelReady) return;
   channel.publish('video_sync', payload);
 }
 
-/* ══════════════════════════════════════════════
-    SYNC RECEIVER
-══════════════════════════════════════════════ */
 function handleRemoteSync(payload) {
   isSyncingFromRemote = true;
 
@@ -1300,28 +1261,11 @@ function handleRemoteSync(payload) {
     setTimeout(() => { isSyncingFromRemote = false; }, 300);
 
   } else if (payload.type === 'play') {
-    if (Math.abs(video.currentTime - payload.time) > 1.5) {
-      video.currentTime = payload.time;
-    }
-    // Always play muted first — browser allows muted autoplay without user gesture.
-    // Show the sync overlay so the guest clicks to unmute/confirm playback.
-    // This is the only reliable cross-browser approach.
+    if (Math.abs(video.currentTime - payload.time) > 1.5) video.currentTime = payload.time;
     video.muted = true;
     video.play()
-      .then(() => {
-        // Muted autoplay worked — show overlay so guest can click to unmute
-        pendingRemotePlay = null;
-        document.getElementById('syncOverlay').style.display = 'flex';
-        const small = document.querySelector('#syncOverlay small');
-        if (small) small.textContent = 'Host pressed play — click to unmute & join';
-      })
-      .catch(() => {
-        // Even muted autoplay failed — show overlay for manual start
-        pendingRemotePlay = payload.time;
-        document.getElementById('syncOverlay').style.display = 'flex';
-        const small = document.querySelector('#syncOverlay small');
-        if (small) small.textContent = 'Host is watching — click to join';
-      })
+      .then(() => { setTimeout(() => { video.muted = false; }, 300); })
+      .catch(() => { video.muted = false; })
       .finally(() => { isSyncingFromRemote = false; });
 
   } else if (payload.type === 'pause') {
@@ -1336,25 +1280,6 @@ function handleRemoteSync(payload) {
   } else {
     isSyncingFromRemote = false;
   }
-}
-
-function dismissSyncOverlay() {
-  document.getElementById('syncOverlay').style.display = 'none';
-  isSyncingFromRemote = true;
-
-  // Unmute and seek to pending time if any
-  video.muted = false;
-  if (pendingRemotePlay !== null) {
-    video.currentTime = pendingRemotePlay;
-    pendingRemotePlay = null;
-  }
-
-  // Now play — this works because user just clicked (user gesture)
-  video.play()
-    .catch(() => {})
-    .finally(() => {
-      setTimeout(() => { isSyncingFromRemote = false; }, 200);
-    });
 }
 
 /* ══════════════════════════════════════════════
@@ -1372,80 +1297,53 @@ msgInput.addEventListener('keydown', e => {
 function sendMessage() {
   const text = msgInput.value.trim();
   if (!text) return;
-
   myName = usernameInput.value.trim() || myName;
   localStorage.setItem('st_username', myName);
-
-  const payload = {
-    text,
-    name: myName,
-    color: myColor,
-    time: fmtTime(videoLoaded ? video.currentTime : 0),
-    ts: Date.now()
-  };
-
+  const payload = { text, name: myName, color: myColor, ts: Date.now() };
   renderMessage(payload, true);
   msgInput.value = '';
   msgInput.style.height = '38px';
-
-  if (channel && isChannelReady) {
-    channel.publish('chat_message', payload);
-  } else {
-    showToast('⚠️ Not connected — message sent locally only');
-  }
+  if (channel && isChannelReady) channel.publish('chat_message', payload);
 }
 
 function renderMessage(payload, isOwn) {
-  const isChatTabActive = document.getElementById('chatPanel').classList.contains('active');
-  const group = document.createElement('div');
+  const group    = document.createElement('div');
   group.className = 'msg-group' + (isOwn ? ' msg-own' : '');
-
   const initials = (payload.name || 'G').slice(0, 2).toUpperCase();
   const time     = new Date(payload.ts || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
   group.innerHTML = `
     <div class="msg-header">
-      <div class="msg-avatar" style="background:${payload.color}" aria-hidden="true">${initials}</div>
+      <div class="msg-avatar" style="background:${payload.color}">${initials}</div>
       <span class="msg-name" style="color:${payload.color}">${escapeHTML(payload.name)}</span>
       <span class="msg-time">${time}</span>
     </div>
-    <div class="msg-bubble${isOwn ? ' own' : ''}">${escapeHTML(payload.text)}</div>
-  `;
-
+    <div class="msg-bubble${isOwn ? ' own' : ''}">${escapeHTML(payload.text)}</div>`;
   messagesList.appendChild(group);
   messagesList.scrollTop = messagesList.scrollHeight;
-
-  // Notification sound + badge for messages from others when tab not active
-  if (!isOwn) {
-    if (!isChatTabActive) {
-      handleUnreadBadge();
-    }
-    playChatSound();
-  }
 }
 
 function handleUnreadBadge() {
-  const isChatTabActive = document.getElementById('chatTabButton')?.classList.contains('active');
-  if (isChatTabActive) return;
+  const isChatActive = document.getElementById('chatTabButton')?.classList.contains('active');
+  if (isChatActive) return;
   unreadCount++;
-  const badge    = document.getElementById('tabNotificationBadge');
-  const mobBadge = document.getElementById('chatNotificationBadge');
-  if (badge)    { badge.textContent = unreadCount; badge.style.display = 'inline-flex'; }
-  if (mobBadge) { mobBadge.textContent = unreadCount; mobBadge.style.display = 'flex'; }
+  const b1 = document.getElementById('tabNotificationBadge');
+  const b2 = document.getElementById('chatNotificationBadge');
+  if (b1) { b1.textContent = unreadCount; b1.style.display = 'inline-flex'; }
+  if (b2) { b2.textContent = unreadCount; b2.style.display = 'flex'; }
 }
 
 function clearUnreadBadge() {
   unreadCount = 0;
-  const badge    = document.getElementById('tabNotificationBadge');
-  const mobBadge = document.getElementById('chatNotificationBadge');
-  if (badge)    { badge.textContent = ''; badge.style.display = 'none'; }
-  if (mobBadge) { mobBadge.textContent = ''; mobBadge.style.display = 'none'; }
+  const b1 = document.getElementById('tabNotificationBadge');
+  const b2 = document.getElementById('chatNotificationBadge');
+  if (b1) { b1.textContent = ''; b1.style.display = 'none'; }
+  if (b2) { b2.textContent = ''; b2.style.display = 'none'; }
 }
 
 function playChatSound() {
   try {
-    const sound = document.getElementById('chatNotificationSound');
-    if (sound) { sound.currentTime = 0; sound.play().catch(() => {}); }
+    const s = document.getElementById('chatNotificationSound');
+    if (s) { s.currentTime = 0; s.play().catch(() => {}); }
   } catch(e) {}
 }
 
@@ -1461,16 +1359,16 @@ function addSystemMsg(text) {
     VIEWERS UI
 ══════════════════════════════════════════════ */
 function updateViewersUI() {
-  const count = viewers.size;
+  const count     = viewers.size;
+  const viewerArr = Array.from(viewers.values());
   document.getElementById('onlineCount').textContent = count + ' online';
 
-  // Topbar avatar stack
+  // Topbar chips
   const stack = document.getElementById('viewerStack');
   stack.innerHTML = '';
-  const viewerArr = Array.from(viewers.values());
   viewerArr.slice(0, 4).forEach(v => {
     const chip = document.createElement('div');
-    chip.className = 'v-chip';
+    chip.className   = 'v-chip';
     chip.style.background = v.color || '#555';
     chip.textContent = (v.name || 'G').slice(0, 1).toUpperCase();
     chip.title = v.name;
@@ -1478,26 +1376,24 @@ function updateViewersUI() {
   });
   if (count > 4) {
     const more = document.createElement('div');
-    more.className = 'v-chip v-count';
+    more.className   = 'v-chip v-count';
     more.textContent = '+' + (count - 4);
     stack.appendChild(more);
   }
 
-  // Viewers sidebar list
+  // Sidebar list
   const list = document.getElementById('viewersList');
   list.innerHTML = '';
   viewerArr.forEach((v, i) => {
     const row = document.createElement('div');
     row.className = 'viewer-row';
-    const initials = (v.name || 'G').slice(0, 2).toUpperCase();
     row.innerHTML = `
-      <div class="v-avatar" style="background:${v.color||'#555'}">${initials}</div>
+      <div class="v-avatar" style="background:${v.color||'#555'}">${(v.name||'G').slice(0,2).toUpperCase()}</div>
       <div class="viewer-info">
-        <div class="viewer-name">${escapeHTML(v.name || 'Guest')} ${v.name === myName ? '(You)' : ''}</div>
+        <div class="viewer-name">${escapeHTML(v.name||'Guest')} ${v.name===myName?'(You)':''}</div>
         <div class="viewer-status">Watching now</div>
       </div>
-      ${i === 0 ? '<span class="host-badge">👑 Host</span>' : '<div class="online-dot"></div>'}
-    `;
+      ${i===0?'<span class="host-badge">👑 Host</span>':'<div class="online-dot"></div>'}`;
     list.appendChild(row);
   });
 }
@@ -1509,9 +1405,7 @@ document.querySelectorAll('.reaction-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     const emoji = btn.getAttribute('data-emoji');
     spawnFloatingReaction(emoji);
-    if (channel && isChannelReady) {
-      channel.publish('reaction', { emoji });
-    }
+    if (channel && isChannelReady) channel.publish('reaction', { emoji });
   });
 });
 
@@ -1543,33 +1437,26 @@ document.querySelectorAll('.chat-tab').forEach(tab => {
 });
 
 /* ══════════════════════════════════════════════
-    MOBILE CHAT TOGGLE
+    MOBILE CHAT
 ══════════════════════════════════════════════ */
 const mobileChatBubble = document.getElementById('mobileChatBubble');
 const chatSidebar      = document.getElementById('chatSidebar');
 const chatBackdrop     = document.getElementById('chatBackdrop');
 
-function openMobileChat() {
+function openMobileChat()  {
   chatSidebar.classList.add('mobile-open');
   if (chatBackdrop) chatBackdrop.classList.add('visible');
   clearUnreadBadge();
 }
-
 function closeMobileChat() {
   chatSidebar.classList.remove('mobile-open');
   if (chatBackdrop) chatBackdrop.classList.remove('visible');
 }
 
-if (mobileChatBubble && chatSidebar) {
-  mobileChatBubble.addEventListener('click', () => {
-    const isOpen = chatSidebar.classList.contains('mobile-open');
-    isOpen ? closeMobileChat() : openMobileChat();
-  });
-}
-
-if (chatBackdrop) {
-  chatBackdrop.addEventListener('click', closeMobileChat);
-}
+if (mobileChatBubble) mobileChatBubble.addEventListener('click', () => {
+  chatSidebar.classList.contains('mobile-open') ? closeMobileChat() : openMobileChat();
+});
+if (chatBackdrop) chatBackdrop.addEventListener('click', closeMobileChat);
 
 /* ══════════════════════════════════════════════
     SHARE MODAL
@@ -1580,17 +1467,12 @@ document.getElementById('closeModalBtn').addEventListener('click', () => shareMo
 shareModal.addEventListener('click', e => { if (e.target === shareModal) shareModal.classList.remove('open'); });
 document.getElementById('copyLinkBtn').addEventListener('click', () => {
   navigator.clipboard.writeText(location.href).then(() => {
-    showToast('Link copied! 🔗 Send it to your babe');
+    showToast('Link copied! 🔗');
     shareModal.classList.remove('open');
   });
 });
 
-/* ══════════════════════════════════════════════
-    SETTINGS BUTTON (stub)
-══════════════════════════════════════════════ */
-document.getElementById('settingsBtn').addEventListener('click', () => {
-  showToast('⚙️ Settings coming soon');
-});
+document.getElementById('settingsBtn').addEventListener('click', () => showToast('⚙️ Settings coming soon'));
 
 /* ══════════════════════════════════════════════
     UTILITIES
@@ -1602,27 +1484,39 @@ function fmtTime(s) {
   const sec = Math.floor(s % 60).toString().padStart(2, '0');
   return h > 0 ? `${h}:${m.toString().padStart(2,'0')}:${sec}` : `${m}:${sec}`;
 }
-
 function escapeHTML(str) {
-  return String(str)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(str||'').replace(/[&<>'"]/g, t =>
+    ({ '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;' }[t]||t));
 }
-
 function randomColor() {
-  const colors = ['#e50914','#1a73e8','#0f9d58','#f4b400','#9c27b0','#00bcd4','#ff5722','#e91e63'];
-  const c = colors[Math.floor(Math.random() * colors.length)];
-  localStorage.setItem('st_color', c);
-  return c;
+  const c = ['#e50914','#1a73e8','#0f9d58','#f4b400','#9c27b0','#00bcd4','#ff5722','#e91e63'];
+  const col = c[Math.floor(Math.random() * c.length)];
+  localStorage.setItem('st_color', col);
+  return col;
+}
+let toastTimer;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
 }
 
-let toastTimer;
-const toastEl = document.getElementById('toast');
-function showToast(msg) {
-  toastEl.textContent = msg;
-  toastEl.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 3000);
+/* ══════════════════════════════════════════════
+    SYNC OVERLAY — only shown when browser blocks autoplay on remote play
+══════════════════════════════════════════════ */
+function dismissSyncOverlay() {
+  document.getElementById('syncOverlay').style.display = 'none';
+  isSyncingFromRemote = true;
+  if (pendingRemotePlay !== null) {
+    video.currentTime = pendingRemotePlay;
+    pendingRemotePlay = null;
+  }
+  video.muted = false;
+  video.play().catch(() => {}).finally(() => {
+    setTimeout(() => { isSyncingFromRemote = false; }, 200);
+  });
 }
 
 /* ══════════════════════════════════════════════
@@ -1632,33 +1526,25 @@ window.addEventListener('DOMContentLoaded', () => {
   initAbly();
 
   if (directStreamUrl) {
-    const videoSourceInput = document.getElementById('videoUrlInput');
-    if (videoSourceInput) videoSourceInput.value = directStreamUrl;
-
-    // Load video immediately for everyone
+    const inp = document.getElementById('videoUrlInput');
+    if (inp) inp.value = directStreamUrl;
     setupVideoSource(directStreamUrl);
-    addSystemMsg('Movie loaded 🎬');
+    addSystemMsg('Movie loaded 🎬 — everyone starts from the beginning');
 
-    // Only broadcast load if we're the first person in the room (host).
-    // Guests already have the URL from the share link — they don't need
-    // to rebroadcast it back, which would cause the host's video to reload.
+    // Broadcast load once connected
     let attempts = 0;
     const tryBroadcast = () => {
-      attempts++;
-      if (!isChannelReady) {
-        if (attempts < 50) setTimeout(tryBroadcast, 200);
-        else showToast('⚠️ Could not connect — check connection');
-        return;
-      }
-      // Only broadcast if we're the only viewer (we're the host)
-      if (viewers.size <= 1) {
-        broadcastSync({
-          type: 'load',
-          src: directStreamUrl,
-          title: directTitle || document.getElementById('roomNameDisplay').textContent
-        });
-      }
-      // Guests just load locally and stay silent — host is already playing
+      if (isChannelReady) {
+        // Only broadcast if we're alone (host), not a joiner
+        if (viewers.size <= 1) {
+          broadcastSync({
+            type: 'load',
+            src: directStreamUrl,
+            title: directTitle || document.getElementById('roomNameDisplay').textContent
+          });
+        }
+      } else if (++attempts < 50) setTimeout(tryBroadcast, 200);
+      else showToast('⚠️ Could not connect — check connection');
     };
     setTimeout(tryBroadcast, 500);
   }

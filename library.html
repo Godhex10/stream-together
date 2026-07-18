@@ -885,45 +885,28 @@ async function openStreamPicker(movie) {
 
 /* Reusable stream item renderer — used by both movies and series */
 function renderStreamItems(streams, movie) {
-    // Step 1 — Filter out garbage streams:
-    // - No audio (CAM rips, muted, silent)
-    // - No streamable URL
-    // - Likely trailers/samples (very small files under 100MB)
-    // - Scene/sample releases with keywords indicating no full movie
+    // Filter: remove only streams with no URL, CAM rips, and tiny files (trailers)
     const filtered = streams.filter(stream => {
-      const audio = getAudioInfo(stream);
-      if (!audio.ok) return false; // remove no-audio streams
-
       const url = getStreamUrl(stream);
-      if (!url) return false; // must have a URL
+      if (!url) return false;
 
-      // Filter out tiny files that are likely trailers/samples
+      // Remove tiny files likely to be trailers/samples
       const size = stream.size || 0;
-      if (size > 0 && size < 100 * 1024 * 1024) return false; // under 100MB
+      if (size > 0 && size < 50 * 1024 * 1024) return false;
 
-      // Filter out streams with keywords suggesting no actual movie.
-      // Use getFullDetail so we check ALL fields (name + title + description +
-      // filename + bingeGroup) — codec/keyword info can live in any of them.
+      // Remove CAM rips — bad audio/video quality
       const full = getFullDetail(stream);
-      const badKeywords = ['TRAILER', 'SAMPLE', 'FEATURETTE', 'DELETED SCENE', 'EXTRAS', 'BONUS', 'BEHIND THE SCENES'];
-      if (badKeywords.some(k => full.includes(k))) return false;
+      if (full.includes('CAMRIP') || full.includes('HDCAM') ||
+          full.includes('CAM.X') || full.includes('CAM-') ||
+          full.includes('.CAM.') || /\bCAM\b/.test(full)) return false;
 
-      // ONLY allow x264/H.264/AVC streams — guaranteed to play on
-      // every device and browser without GPU hardware decoding.
-      // x265/HEVC/AV1/VP9/XviD/DivX all cause black screen on mobile/low-end devices.
-      // full already includes ALL fields (name+title+description+filename) uppercased.
-      const isX264 = full.includes('X264') || full.includes('X.264') ||
-                     full.includes('H264') || full.includes('H.264') ||
-                     full.includes('AVC');
-      const hasCodecInfo = full.includes('X264') || full.includes('X265') ||
-                           full.includes('H264') || full.includes('H265') ||
-                           full.includes('HEVC') || full.includes('AVC')  ||
-                           full.includes('AV1')  || full.includes('VP9')  ||
-                           full.includes('XVID') || full.includes('DIVX') ||
-                           full.includes('MPEG2')|| full.includes('MPEG4');
-      // If codec info is present in ANY field, it must be x264/H.264/AVC.
-      // Streams with no codec info at all (e.g. Nuvio direct HTTP) pass through.
-      if (hasCodecInfo && !isX264) return false;
+      // Remove explicitly muted/silent streams
+      if (full.includes('MUTED') || full.includes('NO AUDIO') ||
+          full.includes('SILENT')) return false;
+
+      // Remove trailer/sample keywords
+      const bad = ['TRAILER','SAMPLE','FEATURETTE','DELETED SCENE','EXTRAS','BONUS'];
+      if (bad.some(k => full.includes(k))) return false;
 
       return true;
     });
@@ -931,21 +914,20 @@ function renderStreamItems(streams, movie) {
     if (filtered.length === 0) {
       streamList.innerHTML = `
         <div class="status-message">
-          No compatible streams found.<br>
+          No streams found for this title.<br>
           <span style="font-size:0.8rem;color:var(--muted2)">
-            All streams are x265/HEVC or have no audio.<br>
-            Try a different movie or episode.
+            Try a different movie or check back later.
           </span>
         </div>`;
       return;
     }
 
-    // Step 2 — Sort smallest to biggest file size
-    // Unknown size goes to the end
+    // Sort by quality descending (4K → 1080p → 720p → lower)
+    // then by seeders within same quality
     const sorted = [...filtered].sort((a, b) => {
-      const sizeA = a.size || Infinity;
-      const sizeB = b.size || Infinity;
-      return sizeA - sizeB;
+      const qDiff = getQualityRank(b) - getQualityRank(a);
+      if (qDiff !== 0) return qDiff;
+      return (getSeederInfo(b) || 0) - (getSeederInfo(a) || 0);
     });
 
     sorted.slice(0, 30).forEach(stream => {
@@ -1230,7 +1212,7 @@ async function openSeriesStreamPicker(series, season, episode, epTitle) {
     }
 
     document.getElementById('streamModalSub').textContent =
-      `${merged.length} streams found — Nuvio ✅ = no RD needed`;
+      `${merged.length} streams found — sorted by quality`;
 
     renderStreamItems(merged, { ...series, id: streamId, name: fullTitle, _fullTitle: fullTitle });
 
