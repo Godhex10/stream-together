@@ -665,18 +665,19 @@ async function fetchAllStreams(imdbId) {
     fetchFromSource(`${NUVIO_BASE}/stream/movie/${imdbId}.json`, 'nuvio')
   ]);
 
-  // Nuvio first — direct HTTP, no RD needed
+  // Merge all streams
   const seen   = new Set();
-  const merged = [];
-
+  const allStreams = [];
   for (const stream of [...nuvioStreams, ...torrentioStreams, ...aiostreamsStreams]) {
     const key = stream.infoHash || stream.url || (stream.name + (stream.title || ''));
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    merged.push(stream);
+    allStreams.push(stream);
   }
 
-  console.log(`[Streams] Total: ${merged.length} (Nuvio: ${nuvioStreams.length}, Torrentio: ${torrentioStreams.length}, AIOStreams: ${aiostreamsStreams.length})`);
+  // Check RD instant availability and filter to H.264 only
+  const merged = await filterToH264WithRD(allStreams);
+  console.log(`[Streams] After RD H.264 filter: ${merged.length}/${allStreams.length} streams`);
 
   streamCache[imdbId] = merged;
   return merged;
@@ -810,27 +811,19 @@ async function fetchBestFormat(imdbId) {
     const res    = await fetch(url, { signal: AbortSignal.timeout(6000) });
     const data   = await res.json();
     const streams = data.streams || [];
-
     let fmt = 'none';
     if (streams.length > 0) {
-      const has1080 = streams.some(s => getQualityLabel(s) === '1080P');
       const has4k   = streams.some(s => getQualityLabel(s) === '4K');
+      const has1080 = streams.some(s => getQualityLabel(s) === '1080P');
       fmt = has4k ? '4k' : has1080 ? '1080p' : 'sd';
     }
-
     streamCache[imdbId] = streams.map(s => ({ ...s, _source: 'torrentio' }));
-
     const badge = document.getElementById('fmt_' + imdbId);
     if (badge) {
-      if (fmt === 'none') {
-        badge.textContent = 'N/A'; badge.className = 'format-badge none';
-      } else if (fmt === '4k') {
-        badge.textContent = '4K'; badge.className = 'format-badge mp4';
-      } else if (fmt === '1080p') {
-        badge.textContent = 'HD'; badge.className = 'format-badge mp4';
-      } else {
-        badge.textContent = 'SD'; badge.className = 'format-badge mkv';
-      }
+      if (fmt === 'none')  { badge.textContent = 'N/A'; badge.className = 'format-badge none'; }
+      else if (fmt === '4k')    { badge.textContent = '4K';  badge.className = 'format-badge mp4'; }
+      else if (fmt === '1080p') { badge.textContent = 'HD';  badge.className = 'format-badge mp4'; }
+      else                      { badge.textContent = 'SD';  badge.className = 'format-badge mkv'; }
     }
   } catch (e) {
     const badge = document.getElementById('fmt_' + imdbId);
@@ -844,11 +837,11 @@ async function fetchBestFormat(imdbId) {
 async function openStreamPicker(movie) {
   selectedMovie = movie;
   document.getElementById('streamModalTitle').textContent = movie.name || movie.title;
-  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio, AIOStreams & Nuvio…';
+  document.getElementById('streamModalSub').textContent = '🔍 Searching all sources + checking H.264 availability…';
   streamList.innerHTML = `
     <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
       <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
-      Searching Torrentio, AIOStreams & Nuvio…
+      Searching & filtering H.264 streams…
     </div>`;
   streamModal.classList.add('open');
 
@@ -873,7 +866,7 @@ async function openStreamPicker(movie) {
       .join(', ');
 
     document.getElementById('streamModalSub').textContent =
-      `${streams.length} streams found (${sourceSummary}) — sorted by quality`;
+      `${streams.length} streams found (${sourceSummary}) — H.264 only, plays on all devices`;
 
     streamList.innerHTML = '';
     renderStreamItems(streams, movie);
@@ -914,7 +907,7 @@ function renderStreamItems(streams, movie) {
     if (filtered.length === 0) {
       streamList.innerHTML = `
         <div class="status-message">
-          No streams found for this title.<br>
+          No H.264 streams found for this title.<br>
           <span style="font-size:0.8rem;color:var(--muted2)">
             Try a different movie or check back later.
           </span>
@@ -938,14 +931,21 @@ function renderStreamItems(streams, movie) {
       const seeders     = getSeederInfo(stream);
       const source      = SOURCE_LABELS[stream._source] || { label: stream._source, color: '#888' };
       const { name, filename } = getStreamDisplayName(stream);
+      // Use RD's actual filename if available (more accurate codec info)
+      const rdFilename  = stream._rdFilename || '';
       const displayName = name || 'Unknown source';
+      const subFilename = rdFilename || filename;
       const streamUrl   = getStreamUrl(stream);
 
       if (!streamUrl) return;
 
-      // Build badge row: size + video codec + audio + seeders + source
+      // Build badge row: RD cached + size + video codec + audio + seeders + source
       const videoCodec = getVideoCodec(stream);
       const badges = [];
+      // Show RD cached badge — means instant resolution, no waiting
+      if (stream._rdCached) badges.push(
+        `<span style="background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.3);border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:#4ade80;">⚡ RD Cached</span>`
+      );
       if (sizeLabel) badges.push(
         `<span style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:#ddd;">💾 ${escapeHTML(sizeLabel)}</span>`
       );
@@ -969,7 +969,7 @@ function renderStreamItems(streams, movie) {
         <div class="stream-info">
           <div class="stream-name">${escapeHTML(displayName)}</div>
           ${filename && filename !== displayName
-            ? `<div style="font-size:0.7rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;">${escapeHTML(filename)}</div>`
+            ? `<div style="font-size:0.7rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;">${escapeHTML(subFilename)}</div>`
             : ''}
           <div class="stream-meta" style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap;margin-top:0.25rem;">
             ${badges.join('')}
@@ -991,30 +991,19 @@ function renderStreamItems(streams, movie) {
           let finalUrl;
           const isNuvio = stream._source === 'nuvio';
 
-          if (isNuvio && streamUrl && streamUrl.startsWith('http')) {
+          if (stream._source === 'nuvio' && streamUrl.startsWith('http')) {
             playBtn.textContent = '⏳ Loading…';
             finalUrl = streamUrl;
-
           } else if (isMagnet(streamUrl)) {
-            playBtn.textContent = '⏳ Trying streams…';
-
-            const allStreams = streamCache[movie.id] || [];
-            const allMagnets = allStreams
+            playBtn.textContent = '⏳ Resolving…';
+            const allMagnets = (streamCache[movie.id] || streamCache[movie._streamId] || [])
               .filter(s => s._source !== 'nuvio')
               .map(s => getStreamUrl(s))
               .filter(u => u && isMagnet(u));
-
-            const clickedIdx = allMagnets.indexOf(streamUrl);
-            if (clickedIdx > 0) {
-              allMagnets.splice(clickedIdx, 1);
-              allMagnets.unshift(streamUrl);
-            } else if (clickedIdx === -1) {
-              allMagnets.unshift(streamUrl);
-            }
-
-            console.log(`[RD] Sending ${allMagnets.length} magnets for auto-retry`);
+            const idx = allMagnets.indexOf(streamUrl);
+            if (idx > 0) { allMagnets.splice(idx, 1); allMagnets.unshift(streamUrl); }
+            else if (idx === -1) allMagnets.unshift(streamUrl);
             finalUrl = await resolveWithRetry(allMagnets);
-
           } else {
             playBtn.textContent = '⏳ Resolving…';
             finalUrl = await resolveStreamUrl(streamUrl);
@@ -1183,7 +1172,7 @@ async function openSeriesStreamPicker(series, season, episode, epTitle) {
   streamList.innerHTML = `
     <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
       <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
-      Searching Torrentio, AIOStreams & Nuvio…
+      Searching & filtering H.264 streams…
     </div>`;
   streamModal.classList.add('open');
 
@@ -1195,8 +1184,15 @@ async function openSeriesStreamPicker(series, season, episode, epTitle) {
     ]);
 
     const seen = new Set();
-    const merged = [];
+    const allSeriesStreams = [];
     for (const s of [...nuvioStreams, ...torrentioStreams, ...aioStreams]) {
+      const key = s.infoHash || s.url || s.name;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      allSeriesStreams.push(s);
+    }
+    const merged = await filterToH264WithRD(allSeriesStreams);
+    for (const s of merged) {
       const key = s.infoHash || s.url || s.name;
       if (!key || seen.has(key)) continue;
       seen.add(key);
@@ -1212,7 +1208,7 @@ async function openSeriesStreamPicker(series, season, episode, epTitle) {
     }
 
     document.getElementById('streamModalSub').textContent =
-      `${merged.length} streams found — sorted by quality`;
+      `${merged.length} streams found — H.264 only, plays on all devices`;
 
     renderStreamItems(merged, { ...series, id: streamId, name: fullTitle, _fullTitle: fullTitle });
 
@@ -1237,6 +1233,127 @@ document.getElementById('episodeModal').addEventListener('click', e => {
 ══════════════════════════════════════════════ */
 const RD_KEY   = 'AZIOEBYE3PEL4XQF3JIE7NQFSOSINHN3KYCCGIRUQFYOTSOPS3SQ';
 const RD_PROXY = '/api/realdebrid';
+
+/* ══════════════════════════════════════════════
+    RD INSTANT AVAILABILITY — H.264 FILTER
+    Checks which torrents are cached on RD AND
+    confirms their filename contains x264/H264/AVC.
+    This filters out x265/HEVC streams that cause
+    black screen on mobile before ever resolving them.
+══════════════════════════════════════════════ */
+async function filterToH264WithRD(streams) {
+  // Separate magnet streams (need RD check) from direct HTTP streams (Nuvio)
+  const magnetStreams = streams.filter(s => isMagnet(getStreamUrl(s)));
+  const directStreams = streams.filter(s => {
+    const url = getStreamUrl(s);
+    return url && !isMagnet(url);
+  });
+
+  // Direct HTTP streams (Nuvio) — pass through as-is, assumed H.264
+  const results = [...directStreams];
+
+  if (magnetStreams.length === 0) return results;
+
+  // Extract infoHashes from magnet streams
+  const hashMap = {};
+  magnetStreams.forEach(stream => {
+    const url = getStreamUrl(stream);
+    let hash = stream.infoHash;
+    if (!hash && url) {
+      const m = url.match(/btih:([a-fA-F0-9]{40})/i);
+      if (m) hash = m[1].toLowerCase();
+    }
+    if (hash) hashMap[hash.toLowerCase()] = stream;
+  });
+
+  const hashes = Object.keys(hashMap);
+  if (hashes.length === 0) return results;
+
+  try {
+    // Batch check RD instant availability — max 40 hashes per request
+    const batchSize = 40;
+    const availableHashes = new Set();
+    const filenameMap = {};
+
+    for (let i = 0; i < hashes.length; i += batchSize) {
+      const batch = hashes.slice(i, i + batchSize);
+      const hashPath = batch.join('/');
+
+      const res = await fetch(`${RD_PROXY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'instantAvailability',
+          hashes: batch,
+          token: RD_KEY
+        })
+      });
+
+      if (!res.ok) continue;
+      const data = await res.json();
+
+      // RD returns { hash: { rd: [ { filename: '...', filesize: ... } ] } }
+      for (const [hash, info] of Object.entries(data)) {
+        const h = hash.toLowerCase();
+        if (info && info.rd && info.rd.length > 0) {
+          availableHashes.add(h);
+          // Get the largest file's filename (main movie file)
+          const files = info.rd.flat();
+          const largest = files.sort((a, b) => (b.filesize || 0) - (a.filesize || 0))[0];
+          if (largest?.filename) filenameMap[h] = largest.filename.toUpperCase();
+        }
+      }
+    }
+
+    console.log(`[RD] ${availableHashes.size}/${hashes.length} torrents cached on RD`);
+
+    // Filter: must be cached AND filename must indicate H.264
+    for (const [hash, stream] of Object.entries(hashMap)) {
+      if (!availableHashes.has(hash)) continue; // not cached, skip
+
+      const filename = filenameMap[hash] || '';
+      const full = filename + ' ' + getFullDetail(stream);
+
+      // Check codec from filename
+      const isX264 = full.includes('X264') || full.includes('X.264') ||
+                     full.includes('H264') || full.includes('H.264') ||
+                     full.includes('AVC')  || full.includes('WEB-DL') ||
+                     full.includes('WEBDL')|| full.includes('WEB.DL') ||
+                     full.includes('WEBRIP');
+
+      const hasCodecInfo = full.includes('X264') || full.includes('X265') ||
+                           full.includes('H264') || full.includes('H265') ||
+                           full.includes('HEVC') || full.includes('AVC')  ||
+                           full.includes('AV1')  || full.includes('VP9')  ||
+                           full.includes('XVID') || full.includes('DIVX') ||
+                           full.includes('HEVC');
+
+      // If codec info present — must be x264/H264/AVC/WEB
+      // If no codec info but cached — allow through (WEB releases usually H264)
+      if (hasCodecInfo && !isX264) {
+        console.log(`[RD] Filtered x265: ${filename}`);
+        continue;
+      }
+
+      // Update stream with RD filename for better display
+      if (filenameMap[hash]) {
+        stream._rdFilename = filenameMap[hash];
+        stream._rdCached = true;
+      }
+
+      results.push(stream);
+    }
+
+    console.log(`[RD] H.264 filter result: ${results.length} streams pass`);
+
+  } catch (e) {
+    console.warn('[RD] Instant availability check failed:', e.message);
+    // Fallback — return all magnet streams unfiltered
+    return [...results, ...magnetStreams];
+  }
+
+  return results;
+}
 
 async function rdProxy(body) {
   const res = await fetch(RD_PROXY, {
