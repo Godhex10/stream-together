@@ -32,7 +32,22 @@ export default async function handler(req, res) {
 
     /* ─── Single step actions (used for polling) ─── */
 
-    if (action === 'addMagnet') {
+    if (action === 'instantAvailability') {
+      // Batch check which torrents are cached on RD + get filenames
+      const { hashes } = req.body;
+      if (!hashes || !hashes.length) return res.status(400).json({ error: 'Missing hashes' });
+
+      const hashPath = hashes.join('/');
+      const rdRes = await fetch(
+        `${RD_BASE}/torrents/instantAvailability/${hashPath}`,
+        { headers: { 'Authorization': `Bearer ${token}` } }
+      );
+      const data = await rdRes.json().catch(() => ({}));
+      if (!rdRes.ok) return res.status(rdRes.status).json(data);
+      return res.status(200).json(data);
+    }
+
+
       const { ok, status, data } = await rdFetch(`${RD_BASE}/torrents/addMagnet`, {
         method: 'POST', headers: authHeaders,
         body: `magnet=${encodeURIComponent(magnet)}`
