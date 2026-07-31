@@ -11,8 +11,7 @@
 
 const SOURCES = {
   torrentio: [
-    'https://torrentio.strem.fun',
-    'https://torrentio.elfhosted.com'
+    'https://torrentio.strem.fun'
   ],
   nuvio: [
     'https://nuviostreamsaddon-production.up.railway.app'
