@@ -559,7 +559,7 @@ function renderLocalMovies() {
 const TORRENTIO_BASE  = 'https://torrentio.strem.fun';
 // Server-side proxy — avoids CORS and routes via Vercel's datacenter,
 // which reaches Torrentio far more reliably than a remote browser does.
-const NUVIO_BASE      = 'https://nuviostreamsaddon-production.up.railway.app';
+const NUVIO_BASE      = 'https://nuviostreamsaddon-production.up.railway.app/providers=vidzee,vidsrc,vixsrc,mp4hydra,topmovies';
 // Single proxy endpoint serves both sources via ?source=
 const TORRENTIO_PROXY = '/api/torrentio';
 
