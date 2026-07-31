@@ -32,21 +32,6 @@ export default async function handler(req, res) {
 
     /* ─── Single step actions (used for polling) ─── */
 
-    if (action === 'instantAvailability') {
-      // Batch check which torrents are cached on RD + get filenames
-      const { hashes } = req.body;
-      if (!hashes || !hashes.length) return res.status(400).json({ error: 'Missing hashes' });
-
-      const hashPath = hashes.join('/');
-      const rdRes = await fetch(
-        `${RD_BASE}/torrents/instantAvailability/${hashPath}`,
-        { headers: { 'Authorization': `Bearer ${token}` } }
-      );
-      const data = await rdRes.json().catch(() => ({}));
-      if (!rdRes.ok) return res.status(rdRes.status).json(data);
-      return res.status(200).json(data);
-    }
-
 
       const { ok, status, data } = await rdFetch(`${RD_BASE}/torrents/addMagnet`, {
         method: 'POST', headers: authHeaders,
@@ -67,31 +52,6 @@ export default async function handler(req, res) {
     if (action === 'torrentInfo') {
       if (!id) return res.status(400).json({ error: 'Missing id' });
       const { ok, status, data } = await rdFetch(`${RD_BASE}/torrents/info/${id}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!ok) return res.status(status).json(data);
-      return res.status(200).json(data);
-    }
-
-    /* ─── mediaInfos: real codec/bitrate/duration for a resolved file ─── */
-    // Returns actual container + video/audio codec data instead of
-    // guessing from the filename string.
-    if (action === 'mediaInfos') {
-      if (!id) return res.status(400).json({ error: 'Missing id' });
-      const { ok, status, data } = await rdFetch(`${RD_BASE}/streaming/mediaInfos/${id}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!ok) return res.status(status).json(data);
-      return res.status(200).json(data);
-    }
-
-    /* ─── transcode: RD-hosted HLS/DASH variants of a resolved file ─── */
-    // Response shape: { apple: {quality:url}, dash: {...},
-    //                   liveMP4: {...}, h264WebM: {...} }
-    // `apple` is the M3U8 HLS set — what HLS.js consumes.
-    if (action === 'transcode') {
-      if (!id) return res.status(400).json({ error: 'Missing id' });
-      const { ok, status, data } = await rdFetch(`${RD_BASE}/streaming/transcode/${id}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!ok) return res.status(status).json(data);
@@ -221,13 +181,7 @@ export default async function handler(req, res) {
 
           // ✅ Success!
           console.log(`[RD] ✅ Resolved on magnet ${i+1}:`, downloadUrl);
-          // Also return the RD file id — needed for mediaInfos + transcode
-          return res.status(200).json({
-            download:    downloadUrl,
-            id:          unResult.data?.id || null,
-            filename:    unResult.data?.filename || null,
-            magnetIndex: i
-          });
+          return res.status(200).json({ download: downloadUrl, magnetIndex: i });
 
         } catch (err) {
           console.warn(`[RD] Exception on magnet ${i+1}:`, err.message);
