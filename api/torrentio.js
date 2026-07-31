@@ -14,7 +14,8 @@ const SOURCES = {
     'https://torrentio.strem.fun'
   ],
   nuvio: [
-    'https://nuviostreamsaddon-production.up.railway.app'
+    // Config prefix must precede /stream/ — set via the addon's /configure page
+    'https://nuviostreamsaddon-production.up.railway.app/providers=vidzee,vidsrc,vixsrc,mp4hydra,topmovies'
   ]
 };
 
