@@ -559,7 +559,7 @@ function renderLocalMovies() {
 const TORRENTIO_BASE  = 'https://torrentio.strem.fun';
 // Server-side proxy — avoids CORS and routes via Vercel's datacenter,
 // which reaches Torrentio far more reliably than a remote browser does.
-const NUVIO_BASE      = 'https://nuviostreamsaddon.up.railway.app';
+const NUVIO_BASE      = 'https://nuviostreamsaddon-production.up.railway.app';
 // Single proxy endpoint serves both sources via ?source=
 const TORRENTIO_PROXY = '/api/torrentio';
 
@@ -581,7 +581,7 @@ async function fetchFromSource(url, sourceName) {
   console.log(`[${sourceName}] GET ${url}`);
   try {
     const controller = new AbortController();
-    const timeout    = setTimeout(() => controller.abort(), 15000);
+    const timeout    = setTimeout(() => controller.abort(), 30000); // must exceed proxy budget
     const res  = await fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
 
@@ -593,6 +593,7 @@ async function fetchFromSource(url, sourceName) {
           detail = err._attempts
             .map(a => `${a.mirror.replace('https://','')}: ${a.error}`)
             .join(' | ');
+          console.warn(`[${sourceName}] upstream attempts:`, err._attempts);
         } else if (err.error) {
           detail = err.error;
         }
@@ -618,7 +619,7 @@ async function fetchFromSource(url, sourceName) {
   } catch (e) {
     // Distinguish the failure modes — they need different fixes
     if (e.name === 'AbortError') {
-      lastFetchError = `${sourceName} timed out after 15s (server slow or down)`;
+      lastFetchError = `${sourceName} timed out after 30s (proxy unreachable)`;
     } else if (e instanceof TypeError) {
       // fetch() throws TypeError for both CORS blocks and network failures
       lastFetchError = `${sourceName} unreachable — blocked by CORS, offline, or DNS failure`;
