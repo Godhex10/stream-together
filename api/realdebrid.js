@@ -32,7 +32,7 @@ export default async function handler(req, res) {
 
     /* ─── Single step actions (used for polling) ─── */
 
-
+    if (action === 'addMagnet') {
       const { ok, status, data } = await rdFetch(`${RD_BASE}/torrents/addMagnet`, {
         method: 'POST', headers: authHeaders,
         body: `magnet=${encodeURIComponent(magnet)}`
