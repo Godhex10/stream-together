@@ -557,6 +557,9 @@ function renderLocalMovies() {
     Real-Debrid already applied — one URL covers all three.
 ══════════════════════════════════════════════ */
 const TORRENTIO_BASE  = 'https://torrentio.strem.fun';
+// Server-side proxy — avoids CORS and routes via Vercel's datacenter,
+// which reaches Torrentio far more reliably than a remote browser does.
+const TORRENTIO_PROXY = '/api/torrentio';
 
 // Cache per imdbId — stores merged results from all sources
 const streamCache = {};
@@ -567,19 +570,59 @@ const SOURCE_LABELS = {
 };
 
 /* Fetch streams from a single source safely — never throws */
+// Records why the last fetch failed, so the UI can explain itself
+let lastFetchError = null;
+
 async function fetchFromSource(url, sourceName) {
+  lastFetchError = null;
+  console.log(`[${sourceName}] GET ${url}`);
   try {
     const controller = new AbortController();
-    const timeout    = setTimeout(() => controller.abort(), 10000); // 10s timeout
+    const timeout    = setTimeout(() => controller.abort(), 15000);
     const res  = await fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
-    if (!res.ok) return [];
+
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const err = await res.json();
+        if (err._attempts) {
+          detail = err._attempts
+            .map(a => `${a.mirror.replace('https://','')}: ${a.error}`)
+            .join(' | ');
+        } else if (err.error) {
+          detail = err.error;
+        }
+      } catch (_) {}
+      lastFetchError = detail;
+      console.warn(`[${sourceName}] ${detail}`);
+      return [];
+    }
+
     const data = await res.json();
     const streams = (data.streams || []).map(s => ({ ...s, _source: sourceName }));
-    console.log(`[${sourceName}] ${streams.length} streams found`);
+
+    if (data._mirror) console.log(`[${sourceName}] answered by ${data._mirror} in ${data._ms}ms`);
+    console.log(`[${sourceName}] ${streams.length} streams returned`);
+
+    if (streams.length === 0) {
+      lastFetchError = data._attempts
+        ? `All mirrors failed — ${data._attempts.map(a => `${a.mirror.replace('https://','')}: ${a.error}`).join(' | ')}`
+        : `${sourceName} responded OK but had no streams for this title`;
+    }
     return streams;
+
   } catch (e) {
-    console.warn(`[${sourceName}] Failed:`, e.message);
+    // Distinguish the failure modes — they need different fixes
+    if (e.name === 'AbortError') {
+      lastFetchError = `${sourceName} timed out after 15s (server slow or down)`;
+    } else if (e instanceof TypeError) {
+      // fetch() throws TypeError for both CORS blocks and network failures
+      lastFetchError = `${sourceName} unreachable — blocked by CORS, offline, or DNS failure`;
+    } else {
+      lastFetchError = `${sourceName} error: ${e.message}`;
+    }
+    console.warn(`[${sourceName}] ${lastFetchError}`, e);
     return [];
   }
 }
@@ -591,7 +634,7 @@ async function fetchAllStreams(imdbId) {
   console.log(`[Streams] Fetching from all sources for ${imdbId}…`);
 
   const torrentioStreams = await fetchFromSource(
-    `${TORRENTIO_BASE}/stream/movie/${imdbId}.json`, 'torrentio'
+    `${TORRENTIO_PROXY}?type=movie&id=${encodeURIComponent(imdbId)}`, 'torrentio'
   );
 
   // Deduplicate
@@ -734,7 +777,7 @@ function getStreamUrl(stream) {
 async function fetchBestFormat(imdbId) {
   if (!imdbId) return;
   try {
-    const url    = `${TORRENTIO_BASE}/stream/movie/${imdbId}.json`;
+    const url    = `${TORRENTIO_PROXY}?type=movie&id=${encodeURIComponent(imdbId)}`;
     const res    = await fetch(url, { signal: AbortSignal.timeout(6000) });
     const data   = await res.json();
     const streams = data.streams || [];
@@ -776,10 +819,17 @@ async function openStreamPicker(movie) {
     const streams = await fetchAllStreams(movie.id);
 
     if (streams.length === 0) {
+      const reason = lastFetchError || 'No streams available for this title';
       streamList.innerHTML = `
         <div class="status-message">
-          No streams found across all sources.<br>
-          <span style="font-size:0.8rem;color:var(--muted2)">Try a more popular movie or check back later.</span>
+          No streams found.<br>
+          <span style="font-size:0.8rem;color:#ff6b6b;display:block;margin-top:0.5rem;">
+            ${escapeHTML(reason)}
+          </span>
+          <span style="font-size:0.75rem;color:var(--muted2);display:block;margin-top:0.7rem;">
+            IMDb ID: ${escapeHTML(movie.id || 'missing')}<br>
+            Open DevTools console for the full request log.
+          </span>
         </div>`;
       document.getElementById('streamModalSub').textContent = 'No streams found.';
       return;
@@ -1094,7 +1144,7 @@ async function openSeriesStreamPicker(series, season, episode, epTitle) {
 
   try {
     const torrentioStreams = await fetchFromSource(
-      `${TORRENTIO_BASE}/stream/series/${streamId}.json`, 'torrentio'
+      `${TORRENTIO_PROXY}?type=series&id=${encodeURIComponent(streamId)}`, 'torrentio'
     );
 
     const seen = new Set();
