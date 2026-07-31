@@ -1,10 +1,9 @@
 // api/torrentio.js
 // Vercel serverless proxy for Stremio-protocol addons (Torrentio, Nuvio).
 //
-// Why: calling these directly from the browser can time out on slower or
-// remote connections, and is subject to CORS. A serverless call runs from
-// Vercel's datacenter — better routing, no CORS, longer timeout, and room
-// to fall back across mirrors.
+// TIMING CONSTRAINT: Vercel's free tier kills functions at 10s. Everything
+// here must finish well inside that, so mirrors are raced in PARALLEL with a
+// short per-request timeout rather than tried one after another.
 //
 // Usage:
 //   GET /api/torrentio?source=torrentio&type=movie&id=tt0468569
@@ -16,11 +15,12 @@ const SOURCES = {
     'https://torrentio.elfhosted.com'
   ],
   nuvio: [
-    'https://nuviostreamsaddon.up.railway.app'
+    'https://nuviostreamsaddon-production.up.railway.app'
   ]
 };
 
-const TIMEOUT_MS = 25000;
+// 7s leaves ~3s of headroom under Vercel's 10s function limit
+const TIMEOUT_MS = 7000;
 
 async function tryMirror(base, type, id) {
   const url = `${base}/stream/${type}/${encodeURIComponent(id)}.json`;
@@ -39,18 +39,26 @@ async function tryMirror(base, type, id) {
     clearTimeout(timer);
     const ms = Date.now() - startedAt;
 
-    if (!res.ok) return { ok: false, mirror: base, ms, error: `HTTP ${res.status}` };
+    if (!res.ok) {
+      // Include a snippet of the body — a 404 page often says what's wrong
+      let hint = '';
+      try {
+        const text = await res.text();
+        if (text) hint = ` — ${text.slice(0, 120).replace(/\s+/g, ' ')}`;
+      } catch (_) {}
+      return { ok: false, mirror: base, ms, url, error: `HTTP ${res.status}${hint}` };
+    }
 
     const data = await res.json();
-    return { ok: true, mirror: base, ms, streams: data.streams || [] };
+    return { ok: true, mirror: base, ms, url, streams: data.streams || [] };
 
   } catch (e) {
     clearTimeout(timer);
     const ms = Date.now() - startedAt;
     const reason = e.name === 'AbortError'
-      ? `timed out after ${TIMEOUT_MS / 1000}s`
+      ? `no response in ${TIMEOUT_MS / 1000}s`
       : e.message;
-    return { ok: false, mirror: base, ms, error: reason };
+    return { ok: false, mirror: base, ms, url, error: reason };
   }
 }
 
@@ -76,26 +84,35 @@ export default async function handler(req, res) {
     });
   }
 
-  const attempts = [];
+  // Race all mirrors at once — total time is the slowest single request,
+  // not the sum. Keeps us inside Vercel's function limit.
+  const results = await Promise.all(mirrors.map(m => tryMirror(m, type, id)));
 
-  for (const base of mirrors) {
-    const result = await tryMirror(base, type, id);
-    attempts.push({ mirror: result.mirror, ms: result.ms, error: result.error || null });
+  const attempts = results.map(r => ({
+    mirror: r.mirror,
+    ms:     r.ms,
+    url:    r.url,
+    error:  r.error || null,
+    count:  r.ok ? r.streams.length : 0
+  }));
 
-    if (result.ok) {
-      console.log(`[${source}] ${result.streams.length} streams from ${result.mirror} in ${result.ms}ms`);
-      return res.status(200).json({
-        streams:   result.streams,
-        _source:   source,
-        _mirror:   result.mirror,
-        _ms:       result.ms,
-        _attempts: attempts
-      });
-    }
+  // Prefer a mirror that actually returned streams, then any that responded OK
+  const withStreams = results.find(r => r.ok && r.streams.length > 0);
+  const anyOk       = results.find(r => r.ok);
+  const winner      = withStreams || anyOk;
 
-    console.warn(`[${source}] ${result.mirror} failed: ${result.error}`);
+  if (winner) {
+    console.log(`[${source}] ${winner.streams.length} streams from ${winner.mirror} in ${winner.ms}ms`);
+    return res.status(200).json({
+      streams:   winner.streams,
+      _source:   source,
+      _mirror:   winner.mirror,
+      _ms:       winner.ms,
+      _attempts: attempts
+    });
   }
 
+  console.warn(`[${source}] all mirrors failed`, attempts);
   return res.status(502).json({
     error:     `All ${source} mirrors failed`,
     streams:   [],
