@@ -575,9 +575,12 @@ const SOURCE_LABELS = {
 /* Fetch streams from a single source safely — never throws */
 // Records why the last fetch failed, so the UI can explain itself
 let lastFetchError = null;
+// Per-source outcome: 'ok' | 'empty' | 'down'
+const sourceStatus = {};
 
 async function fetchFromSource(url, sourceName) {
   lastFetchError = null;
+  sourceStatus[sourceName] = 'down';
   console.log(`[${sourceName}] GET ${url}`);
   try {
     const controller = new AbortController();
@@ -608,6 +611,8 @@ async function fetchFromSource(url, sourceName) {
 
     if (data._mirror) console.log(`[${sourceName}] answered by ${data._mirror} in ${data._ms}ms`);
     console.log(`[${sourceName}] ${streams.length} streams returned`);
+
+    sourceStatus[sourceName] = streams.length > 0 ? 'ok' : 'empty';
 
     if (streams.length === 0) {
       lastFetchError = data._attempts
@@ -825,7 +830,21 @@ async function openStreamPicker(movie) {
     const streams = await fetchAllStreams(movie.id);
 
     if (streams.length === 0) {
-      const reason = lastFetchError || 'No streams available for this title';
+      const label = { torrentio: 'Torrentio', nuvio: 'Nuvio' };
+      const empty = Object.keys(sourceStatus).filter(k => sourceStatus[k] === 'empty');
+      const down  = Object.keys(sourceStatus).filter(k => sourceStatus[k] === 'down');
+
+      let reason;
+      if (empty.length && !down.length) {
+        // Everything answered — the title genuinely has no sources
+        reason = `${empty.map(k => label[k] || k).join(' and ')} searched successfully but found nothing for this title. Try a more popular title.`;
+      } else if (empty.length && down.length) {
+        reason = `${empty.map(k => label[k] || k).join(', ')} found nothing for this title. ${down.map(k => label[k] || k).join(', ')} is unreachable.`;
+      } else if (down.length) {
+        reason = `${down.map(k => label[k] || k).join(' and ')} unreachable — ${lastFetchError || 'no response'}`;
+      } else {
+        reason = lastFetchError || 'No streams available for this title';
+      }
       streamList.innerHTML = `
         <div class="status-message">
           No streams found.<br>
