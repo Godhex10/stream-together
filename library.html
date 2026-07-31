@@ -559,6 +559,8 @@ function renderLocalMovies() {
 const TORRENTIO_BASE  = 'https://torrentio.strem.fun';
 // Server-side proxy — avoids CORS and routes via Vercel's datacenter,
 // which reaches Torrentio far more reliably than a remote browser does.
+const NUVIO_BASE      = 'https://nuviostreamsaddon.up.railway.app';
+// Single proxy endpoint serves both sources via ?source=
 const TORRENTIO_PROXY = '/api/torrentio';
 
 // Cache per imdbId — stores merged results from all sources
@@ -566,7 +568,8 @@ const streamCache = {};
 
 // Source labels so user knows where each result came from
 const SOURCE_LABELS = {
-  torrentio: { label: 'Torrentio', color: '#f4b400' }
+  torrentio: { label: 'Torrentio', color: '#f4b400' },
+  nuvio:     { label: 'Nuvio ✅',  color: '#22c55e' }   // direct HTTP — no RD needed
 };
 
 /* Fetch streams from a single source safely — never throws */
@@ -633,21 +636,23 @@ async function fetchAllStreams(imdbId) {
 
   console.log(`[Streams] Fetching from all sources for ${imdbId}…`);
 
-  const torrentioStreams = await fetchFromSource(
-    `${TORRENTIO_PROXY}?type=movie&id=${encodeURIComponent(imdbId)}`, 'torrentio'
-  );
+  // Query both sources in parallel — one being down no longer empties the picker
+  const [torrentioStreams, nuvioStreams] = await Promise.all([
+    fetchFromSource(`${TORRENTIO_PROXY}?source=torrentio&type=movie&id=${encodeURIComponent(imdbId)}`, 'torrentio'),
+    fetchFromSource(`${TORRENTIO_PROXY}?source=nuvio&type=movie&id=${encodeURIComponent(imdbId)}`, 'nuvio')
+  ]);
 
-  // Deduplicate
+  // Nuvio first — direct HTTP links play without going through Real-Debrid
   const seen   = new Set();
   const merged = [];
-  for (const stream of torrentioStreams) {
+  for (const stream of [...nuvioStreams, ...torrentioStreams]) {
     const key = stream.infoHash || stream.url || (stream.name + (stream.title || ''));
     if (!key || seen.has(key)) continue;
     seen.add(key);
     merged.push(stream);
   }
 
-  console.log(`[Streams] Torrentio: ${merged.length} streams for ${imdbId}`);
+  console.log(`[Streams] ${merged.length} total — Nuvio: ${nuvioStreams.length}, Torrentio: ${torrentioStreams.length}`);
 
   streamCache[imdbId] = merged;
   return merged;
@@ -777,7 +782,7 @@ function getStreamUrl(stream) {
 async function fetchBestFormat(imdbId) {
   if (!imdbId) return;
   try {
-    const url    = `${TORRENTIO_PROXY}?type=movie&id=${encodeURIComponent(imdbId)}`;
+    const url    = `${TORRENTIO_PROXY}?source=torrentio&type=movie&id=${encodeURIComponent(imdbId)}`;
     const res    = await fetch(url, { signal: AbortSignal.timeout(6000) });
     const data   = await res.json();
     const streams = data.streams || [];
@@ -807,11 +812,11 @@ async function fetchBestFormat(imdbId) {
 async function openStreamPicker(movie) {
   selectedMovie = movie;
   document.getElementById('streamModalTitle').textContent = movie.name || movie.title;
-  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio…';
+  document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio + Nuvio…';
   streamList.innerHTML = `
     <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
       <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
-      Searching Torrentio…
+      Searching Torrentio + Nuvio…
     </div>`;
   streamModal.classList.add('open');
 
@@ -961,9 +966,15 @@ function renderStreamItems(streams, movie) {
         try {
           let finalUrl;
 
-          if (isMagnet(streamUrl)) {
+          if (stream._source === 'nuvio' && streamUrl.startsWith('http')) {
+            // Nuvio returns direct HTTP links — nothing to resolve
+            playBtn.textContent = '⏳ Loading…';
+            finalUrl = streamUrl;
+
+          } else if (isMagnet(streamUrl)) {
             playBtn.textContent = '⏳ Resolving…';
             const allMagnets = (streamCache[movie.id] || streamCache[movie._streamId] || [])
+              .filter(s => s._source !== 'nuvio')
               .map(s => getStreamUrl(s))
               .filter(u => u && isMagnet(u));
             const idx = allMagnets.indexOf(streamUrl);
@@ -984,7 +995,7 @@ function renderStreamItems(streams, movie) {
           playBtn.textContent = '❌ Failed — retry';
           playBtn.dataset.loading = 'false';
           showStreamError(err.exhausted
-            ? `All streams blocked by Real-Debrid. Try a different stream or movie.`
+            ? `All streams blocked by Real-Debrid. Try a Nuvio ✅ stream instead, or a different movie.`
             : err.message
           );
         }
@@ -1138,18 +1149,19 @@ async function openSeriesStreamPicker(series, season, episode, epTitle) {
   streamList.innerHTML = `
     <div style="color:var(--muted);font-size:0.85rem;padding:2rem 0;text-align:center;">
       <div style="margin-bottom:0.5rem;font-size:1.5rem">⏳</div>
-      Searching Torrentio…
+      Searching Torrentio + Nuvio…
     </div>`;
   streamModal.classList.add('open');
 
   try {
-    const torrentioStreams = await fetchFromSource(
-      `${TORRENTIO_PROXY}?type=series&id=${encodeURIComponent(streamId)}`, 'torrentio'
-    );
+    const [torrentioStreams, nuvioStreams] = await Promise.all([
+      fetchFromSource(`${TORRENTIO_PROXY}?source=torrentio&type=series&id=${encodeURIComponent(streamId)}`, 'torrentio'),
+      fetchFromSource(`${TORRENTIO_PROXY}?source=nuvio&type=series&id=${encodeURIComponent(streamId)}`, 'nuvio')
+    ]);
 
     const seen = new Set();
     const merged = [];
-    for (const s of torrentioStreams) {
+    for (const s of [...nuvioStreams, ...torrentioStreams]) {
       const key = s.infoHash || s.url || s.name;
       if (!key || seen.has(key)) continue;
       seen.add(key);
