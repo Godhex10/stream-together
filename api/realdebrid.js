@@ -58,6 +58,30 @@ export default async function handler(req, res) {
       return res.status(200).json(data);
     }
 
+    /* ─── mediaInfos: real codec data for a resolved file ─── */
+    // Returns the actual container and video/audio codecs rather than
+    // guessing from the filename string.
+    if (action === 'mediaInfos') {
+      if (!id) return res.status(400).json({ error: 'Missing id' });
+      const { ok, status, data } = await rdFetch(`${RD_BASE}/streaming/mediaInfos/${id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!ok) return res.status(status).json(data);
+      return res.status(200).json(data);
+    }
+
+    /* ─── transcode: RD-hosted HLS variants of a resolved file ─── */
+    // Shape: { apple: {quality:url}, dash: {...}, liveMP4: {...}, h264WebM: {...} }
+    // `apple` is the M3U8 HLS set — what HLS.js consumes.
+    if (action === 'transcode') {
+      if (!id) return res.status(400).json({ error: 'Missing id' });
+      const { ok, status, data } = await rdFetch(`${RD_BASE}/streaming/transcode/${id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!ok) return res.status(status).json(data);
+      return res.status(200).json(data);
+    }
+
     if (action === 'unrestrict') {
       if (!link) return res.status(400).json({ error: 'Missing link' });
       const { ok, status, data } = await rdFetch(`${RD_BASE}/unrestrict/link`, {
@@ -181,7 +205,13 @@ export default async function handler(req, res) {
 
           // ✅ Success!
           console.log(`[RD] ✅ Resolved on magnet ${i+1}:`, downloadUrl);
-          return res.status(200).json({ download: downloadUrl, magnetIndex: i });
+          // Also return the RD file id — needed for mediaInfos + transcode
+          return res.status(200).json({
+            download:    downloadUrl,
+            id:          unResult.data?.id || null,
+            filename:    unResult.data?.filename || null,
+            magnetIndex: i
+          });
 
         } catch (err) {
           console.warn(`[RD] Exception on magnet ${i+1}:`, err.message);
