@@ -1240,11 +1240,93 @@ async function rdProxy(body) {
   return data;
 }
 
+/* ══════════════════════════════════════════════
+    RD TRANSCODE — mobile-safe playback
+    After resolving a file we ask RD for its REAL codec
+    (not a filename guess). If it's already H.264 we play
+    the file directly at full quality. If it's HEVC/x265
+    we use RD's own HLS transcode, produced on their
+    servers as part of the subscription — no FFmpeg,
+    no Railway, no bandwidth cost to us.
+══════════════════════════════════════════════ */
+
+// Set false to always play the raw file and skip transcoding entirely
+const USE_RD_TRANSCODE = true;
+
+// Preference order when RD offers several HLS qualities.
+// Lower first — smaller and safest on phones and weak connections.
+const HLS_QUALITY_ORDER = ['480p', '360p', '720p', 'medium', 'low', '1080p', 'high', 'original'];
+
+/* Read the real video codec out of an RD mediaInfos response */
+function extractVideoCodec(info) {
+  const video = info?.details?.video;
+  if (!video) return null;
+  const first = Object.values(video)[0];
+  return (first?.codec || '').toLowerCase() || null;
+}
+
+function codecNeedsTranscode(codec) {
+  if (!codec) return false;                                      // unknown — don't force it
+  const c = codec.toLowerCase();
+  if (c.includes('h264') || c.includes('avc')) return false;     // already browser-safe
+  return c.includes('hevc') || c.includes('h265') || c.includes('265') ||
+         c.includes('av1')  || c.includes('vp9')  ||
+         c.includes('xvid') || c.includes('divx') || c.includes('mpeg4');
+}
+
+/* Pick the best HLS variant RD offers, honouring HLS_QUALITY_ORDER */
+function pickHlsVariant(appleObj) {
+  const keys = Object.keys(appleObj || {});
+  if (!keys.length) return null;
+  for (const want of HLS_QUALITY_ORDER) {
+    const hit = keys.find(k => k.toLowerCase().includes(want.toLowerCase()));
+    if (hit) return { quality: hit, url: appleObj[hit] };
+  }
+  return { quality: keys[0], url: appleObj[keys[0]] };           // fall back to first
+}
+
+/* Given a resolved RD file, decide between direct URL and HLS transcode */
+async function chooseBestPlayback(rdId, directUrl, filenameHint) {
+  if (!USE_RD_TRANSCODE || !rdId) return directUrl;
+
+  let codec = null;
+  try {
+    const info = await rdProxy({ action: 'mediaInfos', id: rdId });
+    codec = extractVideoCodec(info);
+    console.log('[RD] Real codec reported:', codec || 'unknown');
+  } catch (e) {
+    console.warn('[RD] mediaInfos failed:', e.message);
+    // Fall back to reading the filename
+    const hint = (filenameHint || '').toUpperCase();
+    if (/X265|H265|HEVC/.test(hint)) codec = 'hevc';
+  }
+
+  if (!codecNeedsTranscode(codec)) {
+    console.log('[RD] Codec is browser-safe — playing file directly');
+    return directUrl;
+  }
+
+  try {
+    console.log('[RD] Codec needs transcoding — requesting HLS from RD…');
+    const t = await rdProxy({ action: 'transcode', id: rdId });
+    const variant = pickHlsVariant(t.apple);
+    if (variant?.url) {
+      console.log(`[RD] ✅ Using RD HLS transcode (${variant.quality})`);
+      return variant.url;
+    }
+    console.warn('[RD] Transcode returned no HLS variants — using direct URL');
+  } catch (e) {
+    console.warn('[RD] Transcode request failed:', e.message);
+  }
+
+  return directUrl;   // better to try the file than to fail outright
+}
+
 // Resolve a single magnet — used when user clicks one specific stream
 async function magnetToRealDebrid(magnetLink) {
   const data = await rdProxy({ action: 'resolveMagnet', magnets: [magnetLink] });
   if (!data.download) throw new Error('No download URL returned');
-  return data.download;
+  return await chooseBestPlayback(data.id, data.download, data.filename);
 }
 
 // Resolve using ALL magnets for a movie at once — proxy tries them in order,
@@ -1255,7 +1337,7 @@ async function resolveWithRetry(magnetList) {
   const data = await rdProxy({ action: 'resolveMagnet', magnets: magnetList });
   if (!data.download) throw new Error(data.error || 'All streams failed');
   console.log(`[RD] ✅ Resolved on attempt ${(data.magnetIndex || 0) + 1}`);
-  return data.download;
+  return await chooseBestPlayback(data.id, data.download, data.filename);
 }
 
 function isMagnet(url) {
@@ -1274,7 +1356,9 @@ async function resolveStreamUrl(rawUrl) {
   if (rawUrl.startsWith('http')) {
     try {
       const data = await rdProxy({ action: 'unrestrict', link: rawUrl });
-      if (data.download) return data.download;
+      if (data.download) {
+        return await chooseBestPlayback(data.id, data.download, data.filename);
+      }
     } catch(e) {
       console.warn('[RD] Unrestrict failed, using URL as-is:', e.message);
     }
