@@ -22,7 +22,26 @@ const SOURCES = {
 // 7s leaves ~3s of headroom under Vercel's 10s function limit
 const TIMEOUT_MS = 7000;
 
-async function tryMirror(base, type, id) {
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// Retry a 429 with backoff, respecting Retry-After when the server sends it.
+// Budget is deliberately small — Vercel kills the function at 10s.
+async function tryMirror(base, type, id, attempt = 0) {
+  const result = await tryMirrorOnce(base, type, id);
+
+  if (result.rateLimited && attempt < 1) {
+    const waitMs = Math.min(result.retryAfterMs || 1500, 2500);
+    console.warn(`[${base}] rate limited — retrying in ${waitMs}ms`);
+    await sleep(waitMs);
+    return tryMirror(base, type, id, attempt + 1);
+  }
+
+  return result;
+}
+
+async function tryMirrorOnce(base, type, id) {
   const url = `${base}/stream/${type}/${encodeURIComponent(id)}.json`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -38,6 +57,17 @@ async function tryMirror(base, type, id) {
     });
     clearTimeout(timer);
     const ms = Date.now() - startedAt;
+
+    if (res.status === 429) {
+      // Retry-After may be seconds or an HTTP date; only the numeric form is useful here
+      const ra = res.headers.get('retry-after');
+      const retryAfterMs = ra && !isNaN(Number(ra)) ? Number(ra) * 1000 : null;
+      return {
+        ok: false, rateLimited: true, retryAfterMs,
+        mirror: base, ms, url,
+        error: 'rate limited (HTTP 429)'
+      };
+    }
 
     if (!res.ok) {
       // Include a snippet of the body — a 404 page often says what's wrong
@@ -113,8 +143,13 @@ export default async function handler(req, res) {
   }
 
   console.warn(`[${source}] all mirrors failed`, attempts);
-  return res.status(502).json({
-    error:     `All ${source} mirrors failed`,
+  const anyRateLimited = results.some(r => r.rateLimited);
+
+  return res.status(anyRateLimited ? 429 : 502).json({
+    error:       anyRateLimited
+                   ? `${source} is rate limiting — wait a moment and try again`
+                   : `All ${source} mirrors failed`,
+    rateLimited: anyRateLimited,
     streams:   [],
     _source:   source,
     _attempts: attempts
