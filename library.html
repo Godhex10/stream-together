@@ -1084,11 +1084,14 @@ function renderStreamItems(streams, movie) {
         } catch(err) {
           console.error('Stream resolve failed:', err);
           streamModal.classList.add('open');
-          playBtn.textContent = '❌ Failed — retry';
+          playBtn.textContent = err.rateLimited ? '⏳ Rate limited' : '❌ Failed — retry';
           playBtn.dataset.loading = 'false';
-          showStreamError(err.exhausted
-            ? `All streams blocked by Real-Debrid. Try a Nuvio ✅ stream instead, or a different movie.`
-            : err.message
+          showStreamError(
+            err.rateLimited || err.authError
+              ? err.message
+              : err.exhausted
+                ? 'The streams tried were all rejected. Pick a different one — the list is sorted best-first.'
+                : err.message
           );
         }
       }
@@ -1308,7 +1311,24 @@ async function rdProxy(body) {
     body: JSON.stringify({ ...body, token: RD_KEY })
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `RD proxy error: ${res.status}`);
+
+  if (!res.ok) {
+    const msg = String(data.error || '');
+
+    if (res.status === 429 || msg.includes('too_many_requests')) {
+      const e = new Error('Real-Debrid is rate limiting. Wait about a minute, then try again.');
+      e.rateLimited = true;
+      throw e;
+    }
+    if (msg.includes('permission_denied') || msg.includes('not_premium')) {
+      const e = new Error('Real-Debrid rejected the request — check your subscription is active.');
+      e.authError = true;
+      throw e;
+    }
+
+    throw new Error(data.error || `RD proxy error: ${res.status}`);
+  }
+
   return data;
 }
 
@@ -1403,10 +1423,18 @@ async function magnetToRealDebrid(magnetLink) {
 
 // Resolve using ALL magnets for a movie at once — proxy tries them in order,
 // skipping any flagged as infringing_file automatically
+// RD is rate limited (~250 req/min) and each magnet costs several calls.
+// Sending 60+ guarantees a 429, so cap it — the list is already sorted by
+// quality and seeders, so the best candidates are at the front anyway.
+const MAX_MAGNETS_TO_SEND = 8;
+
 async function resolveWithRetry(magnetList) {
   if (!magnetList.length) throw new Error('No magnets to try');
-  console.log(`[RD] Sending ${magnetList.length} magnets to proxy for auto-retry…`);
-  const data = await rdProxy({ action: 'resolveMagnet', magnets: magnetList });
+
+  const toSend = magnetList.slice(0, MAX_MAGNETS_TO_SEND);
+  console.log(`[RD] Sending ${toSend.length} of ${magnetList.length} magnets to proxy…`);
+
+  const data = await rdProxy({ action: 'resolveMagnet', magnets: toSend });
   if (!data.download) throw new Error(data.error || 'All streams failed');
   console.log(`[RD] ✅ Resolved on attempt ${(data.magnetIndex || 0) + 1}`);
   return await chooseBestPlayback(data.id, data.download, data.filename);
