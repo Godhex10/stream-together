@@ -471,6 +471,7 @@ function capitaliseGenre(g) {
     RENDER CARDS
 ══════════════════════════════════════════════ */
 function renderCards(movies, source) {
+  clearBadgeQueue();          // abandon badge work for the previous grid
   moviesGrid.innerHTML = '';
 
   if (!movies || movies.length === 0) {
@@ -512,7 +513,7 @@ function renderCards(movies, source) {
       });
 
       // Lazy-load the best format badge without blocking the UI
-      setTimeout(() => fetchBestFormat(movie.id), 100);
+      queueBadgeFetch(movie.id);
 
     } else {
       // Local movie
@@ -592,6 +593,12 @@ async function fetchFromSource(url, sourceName) {
       let detail = `HTTP ${res.status}`;
       try {
         const err = await res.json();
+        if (err.rateLimited || res.status === 429) {
+          sourceStatus[sourceName] = 'ratelimited';
+          lastFetchError = `${sourceName} is rate limiting — wait ~30s and try again`;
+          console.warn(`[${sourceName}] rate limited`);
+          return [];
+        }
         if (err._attempts) {
           detail = err._attempts
             .map(a => `${a.mirror.replace('https://','')}: ${a.error}`)
@@ -785,31 +792,92 @@ function getStreamUrl(stream) {
 }
 
 /* Fetch best format badge for a movie card (lightweight — only checks) */
+/* ══════════════════════════════════════════════
+    BADGE PREFETCH QUEUE
+    Rendering 60 cards used to fire 60 Torrentio requests at once,
+    which trips rate limiting before the user clicks anything.
+    Requests are now queued and spaced out, and the queue is
+    cleared whenever the grid changes so we never prefetch
+    badges for cards that have scrolled away.
+══════════════════════════════════════════════ */
+const BADGE_CONCURRENCY = 2;      // simultaneous badge requests
+const BADGE_GAP_MS      = 400;    // pause between requests
+
+let badgeQueue    = [];
+let badgeActive   = 0;
+let badgeQueueRun = 0;            // increments to invalidate an old queue
+
+function clearBadgeQueue() {
+  badgeQueue = [];
+  badgeQueueRun++;
+}
+
+function queueBadgeFetch(imdbId) {
+  if (!imdbId) return;
+  badgeQueue.push({ imdbId, run: badgeQueueRun });
+  pumpBadgeQueue();
+}
+
+function pumpBadgeQueue() {
+  while (badgeActive < BADGE_CONCURRENCY && badgeQueue.length) {
+    const job = badgeQueue.shift();
+    if (job.run !== badgeQueueRun) continue;   // stale — grid moved on
+    badgeActive++;
+    fetchBestFormat(job.imdbId).finally(() => {
+      badgeActive--;
+      setTimeout(pumpBadgeQueue, BADGE_GAP_MS);
+    });
+  }
+}
+
 async function fetchBestFormat(imdbId) {
   if (!imdbId) return;
+
+  // Already fetched this title — reuse it, no request needed
+  if (streamCache[imdbId]) {
+    applyBadge(imdbId, streamCache[imdbId]);
+    return;
+  }
+
   try {
-    const url    = `${TORRENTIO_PROXY}?source=torrentio&type=movie&id=${encodeURIComponent(imdbId)}`;
-    const res    = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    const data   = await res.json();
-    const streams = data.streams || [];
-    let fmt = 'none';
-    if (streams.length > 0) {
-      const has4k   = streams.some(s => getQualityLabel(s) === '4K');
-      const has1080 = streams.some(s => getQualityLabel(s) === '1080P');
-      fmt = has4k ? '4k' : has1080 ? '1080p' : 'sd';
+    const url = `${TORRENTIO_PROXY}?source=torrentio&type=movie&id=${encodeURIComponent(imdbId)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+
+    // Rate limited — back off and let the badge stay neutral
+    if (res.status === 429) {
+      console.warn('[badge] rate limited, backing off');
+      badgeQueue = [];                       // drop pending badge work
+      const badge = document.getElementById('fmt_' + imdbId);
+      if (badge) { badge.textContent = '—'; badge.className = 'format-badge none'; }
+      return;
     }
-    streamCache[imdbId] = streams.map(s => ({ ...s, _source: 'torrentio' }));
-    const badge = document.getElementById('fmt_' + imdbId);
-    if (badge) {
-      if (fmt === 'none')  { badge.textContent = 'N/A'; badge.className = 'format-badge none'; }
-      else if (fmt === '4k')    { badge.textContent = '4K';  badge.className = 'format-badge mp4'; }
-      else if (fmt === '1080p') { badge.textContent = 'HD';  badge.className = 'format-badge mp4'; }
-      else                      { badge.textContent = 'SD';  badge.className = 'format-badge mkv'; }
-    }
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const data    = await res.json();
+    const streams = (data.streams || []).map(s => ({ ...s, _source: 'torrentio' }));
+    streamCache[imdbId] = streams;
+    applyBadge(imdbId, streams);
+
   } catch (e) {
     const badge = document.getElementById('fmt_' + imdbId);
-    if (badge) { badge.textContent = '?'; badge.className = 'format-badge none'; }
+    if (badge) { badge.textContent = '—'; badge.className = 'format-badge none'; }
   }
+}
+
+function applyBadge(imdbId, streams) {
+  const badge = document.getElementById('fmt_' + imdbId);
+  if (!badge) return;
+
+  if (!streams.length) {
+    badge.textContent = 'N/A'; badge.className = 'format-badge none'; return;
+  }
+  const has4k   = streams.some(s => getQualityLabel(s) === '4K');
+  const has1080 = streams.some(s => getQualityLabel(s) === '1080P');
+
+  if (has4k)        { badge.textContent = '4K'; badge.className = 'format-badge mp4'; }
+  else if (has1080) { badge.textContent = 'HD'; badge.className = 'format-badge mp4'; }
+  else              { badge.textContent = 'SD'; badge.className = 'format-badge mkv'; }
 }
 
 /* ══════════════════════════════════════════════
@@ -830,11 +898,15 @@ async function openStreamPicker(movie) {
     const streams = await fetchAllStreams(movie.id);
 
     if (streams.length === 0) {
-      const label = { torrentio: 'Torrentio', nuvio: 'Nuvio' };
-      const empty = Object.keys(sourceStatus).filter(k => sourceStatus[k] === 'empty');
-      const down  = Object.keys(sourceStatus).filter(k => sourceStatus[k] === 'down');
+      const label   = { torrentio: 'Torrentio', nuvio: 'Nuvio' };
+      const empty   = Object.keys(sourceStatus).filter(k => sourceStatus[k] === 'empty');
+      const down    = Object.keys(sourceStatus).filter(k => sourceStatus[k] === 'down');
+      const limited = Object.keys(sourceStatus).filter(k => sourceStatus[k] === 'ratelimited');
 
       let reason;
+      if (limited.length) {
+        reason = `${limited.map(k => label[k] || k).join(' and ')} is rate limiting. Wait about 30 seconds, then try again.`;
+      } else
       if (empty.length && !down.length) {
         // Everything answered — the title genuinely has no sources
         reason = `${empty.map(k => label[k] || k).join(' and ')} searched successfully but found nothing for this title. Try a more popular title.`;
