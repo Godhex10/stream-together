@@ -101,19 +101,39 @@ export default async function handler(req, res) {
       const magnetList = magnets || (magnet ? [magnet] : []);
       if (!magnetList.length) return res.status(400).json({ error: 'No magnets provided' });
 
+      // Errors specific to ONE torrent — skip it and try the next
       const SKIPPABLE_ERRORS = [
         'infringing_file',
         'virus',
         'dead',
-        'magnet_error',
-        'error'
+        'magnet_error'
       ];
+
+      // Errors about the ACCOUNT — every magnet will fail identically,
+      // so stop immediately instead of burning the rate limit further
+      const FATAL_ERRORS = [
+        'too_many_requests',
+        'permission_denied',
+        'bad_token',
+        'account_locked',
+        'not_premium'
+      ];
+
+      const isFatal = (msg) =>
+        FATAL_ERRORS.some(e => String(msg).toLowerCase().includes(e));
+
+      // RD allows ~250 req/min. Each magnet costs 3+ calls, so cap the
+      // attempts rather than walking a 69-item list.
+      const MAX_ATTEMPTS = 8;
 
       let lastError = 'All magnets failed';
 
-      for (let i = 0; i < magnetList.length; i++) {
+      const attemptLimit = Math.min(magnetList.length, MAX_ATTEMPTS);
+      console.log(`[RD] ${magnetList.length} magnets supplied — trying up to ${attemptLimit}`);
+
+      for (let i = 0; i < attemptLimit; i++) {
         const mag = magnetList[i];
-        console.log(`[RD] Trying magnet ${i + 1}/${magnetList.length}…`);
+        console.log(`[RD] Trying magnet ${i + 1}/${attemptLimit}…`);
 
         try {
           // Step 1 — Add magnet
@@ -123,13 +143,21 @@ export default async function handler(req, res) {
           });
 
           if (!addResult.ok) {
-            const errCode = addResult.data?.error_code;
-            const errMsg  = addResult.data?.error || `HTTP ${addResult.status}`;
-            console.warn(`[RD] addMagnet failed: ${errMsg}`);
+            const errMsg = addResult.data?.error || `HTTP ${addResult.status}`;
             lastError = errMsg;
-            // If it's a known skippable error, try next magnet
+
+            // Account-level problem — no point trying the other magnets
+            if (isFatal(errMsg) || addResult.status === 429) {
+              console.error(`[RD] Fatal: ${errMsg} — aborting remaining magnets`);
+              return res.status(429).json({
+                error: errMsg,
+                fatal: true,
+                tried: i + 1
+              });
+            }
+
+            console.warn(`[RD] addMagnet failed: ${errMsg}`);
             if (SKIPPABLE_ERRORS.some(e => errMsg.toLowerCase().includes(e))) continue;
-            // Otherwise fail fast
             break;
           }
 
@@ -145,8 +173,10 @@ export default async function handler(req, res) {
           let links = [];
           let skippable = false;
 
-          for (let poll = 0; poll < 20; poll++) {
-            await new Promise(r => setTimeout(r, 1000));
+          // Poll less aggressively: 1.5s apart, fewer rounds.
+          // A cached torrent returns links within the first couple of checks.
+          for (let poll = 0; poll < 8; poll++) {
+            await new Promise(r => setTimeout(r, 1500));
             const infoResult = await rdFetch(`${RD_BASE}/torrents/info/${torrentId}`, {
               headers: { 'Authorization': `Bearer ${token}` }
             });
@@ -190,7 +220,12 @@ export default async function handler(req, res) {
 
           if (!unResult.ok) {
             const errMsg = unResult.data?.error || `HTTP ${unResult.status}`;
-            // Check if this specific link is infringing
+
+            if (isFatal(errMsg) || unResult.status === 429) {
+              console.error(`[RD] Fatal on unrestrict: ${errMsg}`);
+              return res.status(429).json({ error: errMsg, fatal: true, tried: i + 1 });
+            }
+
             if (SKIPPABLE_ERRORS.some(e => errMsg.toLowerCase().includes(e))) {
               lastError = errMsg;
               console.warn(`[RD] Unrestrict flagged: ${errMsg}, trying next…`);
@@ -217,6 +252,9 @@ export default async function handler(req, res) {
           console.warn(`[RD] Exception on magnet ${i+1}:`, err.message);
           lastError = err.message;
           continue;
+        } finally {
+          // Brief pause so a run of failures doesn't spike the rate limit
+          if (i < attemptLimit - 1) await new Promise(r => setTimeout(r, 300));
         }
       }
 
