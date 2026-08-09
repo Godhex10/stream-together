@@ -173,16 +173,21 @@ export default async function handler(req, res) {
           let links = [];
           let skippable = false;
 
-          // Poll less aggressively: 1.5s apart, fewer rounds.
-          // A cached torrent returns links within the first couple of checks.
-          for (let poll = 0; poll < 8; poll++) {
-            await new Promise(r => setTimeout(r, 1500));
+          // Cached torrents have links IMMEDIATELY — so check first, sleep after.
+          // Sleeping first wasted 1.5s on every single resolve.
+          // Delays then ramp up for the uncached case.
+          const POLL_DELAYS = [0, 400, 700, 1200, 1800, 2500, 3000, 3000];
+
+          for (let poll = 0; poll < POLL_DELAYS.length; poll++) {
+            if (POLL_DELAYS[poll] > 0) {
+              await new Promise(r => setTimeout(r, POLL_DELAYS[poll]));
+            }
             const infoResult = await rdFetch(`${RD_BASE}/torrents/info/${torrentId}`, {
               headers: { 'Authorization': `Bearer ${token}` }
             });
 
             const info = infoResult.data;
-            console.log(`[RD] Torrent ${i+1} status: ${info.status} (${poll+1}s)`);
+            console.log(`[RD] Torrent ${i+1} status: ${info.status} (check ${poll+1})`);
 
             if (info.links?.length > 0) { links = info.links; break; }
 
