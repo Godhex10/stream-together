@@ -1064,7 +1064,11 @@ function renderStreamItems(streams, movie) {
             finalUrl = streamUrl;
 
           } else if (isMagnet(streamUrl)) {
-            playBtn.textContent = '⏳ Resolving…';
+            // Keep the button describing what's actually happening —
+            // resolution can take several seconds and silence feels broken
+            const setProgress = (msg) => { playBtn.textContent = `⏳ ${msg}`; };
+            setProgress('Resolving…');
+
             const allMagnets = (streamCache[movie.id] || streamCache[movie._streamId] || [])
               .filter(s => s._source !== 'nuvio')
               .map(s => getStreamUrl(s))
@@ -1072,7 +1076,15 @@ function renderStreamItems(streams, movie) {
             const idx = allMagnets.indexOf(streamUrl);
             if (idx > 0) { allMagnets.splice(idx, 1); allMagnets.unshift(streamUrl); }
             else if (idx === -1) allMagnets.unshift(streamUrl);
-            finalUrl = await resolveWithRetry(allMagnets);
+
+            // Escalate the wording if it's taking a while, so a slow
+            // uncached torrent doesn't look like a hang
+            const slowTimer = setTimeout(() => setProgress('Still working…'), 6000);
+            try {
+              finalUrl = await resolveWithRetry(allMagnets, setProgress);
+            } finally {
+              clearTimeout(slowTimer);
+            }
           } else {
             playBtn.textContent = '⏳ Resolving…';
             finalUrl = await resolveStreamUrl(streamUrl);
@@ -1378,11 +1390,21 @@ function pickHlsVariant(appleObj) {
 }
 
 /* Given a resolved RD file, decide between direct URL and HLS transcode */
-async function chooseBestPlayback(rdId, directUrl, filenameHint) {
+async function chooseBestPlayback(rdId, directUrl, filenameHint, onProgress) {
   if (!USE_RD_TRANSCODE || !rdId) return directUrl;
+
+  // Fast path: if the filename clearly says x264/AVC we can skip the
+  // mediaInfos round-trip entirely. Saves ~1-2s on most streams, since
+  // x264 is the common case and never needs transcoding anyway.
+  const hint = (filenameHint || '').toUpperCase();
+  if (/X264|H\.?264|AVC/.test(hint) && !/X265|H\.?265|HEVC/.test(hint)) {
+    console.log('[RD] Filename indicates H.264 — skipping codec check');
+    return directUrl;
+  }
 
   let codec = null;
   try {
+    onProgress?.('Checking codec…');
     const info = await rdProxy({ action: 'mediaInfos', id: rdId });
     codec = extractVideoCodec(info);
     console.log('[RD] Real codec reported:', codec || 'unknown');
@@ -1400,6 +1422,7 @@ async function chooseBestPlayback(rdId, directUrl, filenameHint) {
 
   try {
     console.log('[RD] Codec needs transcoding — requesting HLS from RD…');
+    onProgress?.('Preparing mobile stream…');
     const t = await rdProxy({ action: 'transcode', id: rdId });
     const variant = pickHlsVariant(t.apple);
     if (variant?.url) {
@@ -1415,10 +1438,10 @@ async function chooseBestPlayback(rdId, directUrl, filenameHint) {
 }
 
 // Resolve a single magnet — used when user clicks one specific stream
-async function magnetToRealDebrid(magnetLink) {
+async function magnetToRealDebrid(magnetLink, onProgress) {
   const data = await rdProxy({ action: 'resolveMagnet', magnets: [magnetLink] });
   if (!data.download) throw new Error('No download URL returned');
-  return await chooseBestPlayback(data.id, data.download, data.filename);
+  return await chooseBestPlayback(data.id, data.download, data.filename, onProgress);
 }
 
 // Resolve using ALL magnets for a movie at once — proxy tries them in order,
@@ -1428,7 +1451,7 @@ async function magnetToRealDebrid(magnetLink) {
 // quality and seeders, so the best candidates are at the front anyway.
 const MAX_MAGNETS_TO_SEND = 8;
 
-async function resolveWithRetry(magnetList) {
+async function resolveWithRetry(magnetList, onProgress) {
   if (!magnetList.length) throw new Error('No magnets to try');
 
   const toSend = magnetList.slice(0, MAX_MAGNETS_TO_SEND);
@@ -1437,7 +1460,7 @@ async function resolveWithRetry(magnetList) {
   const data = await rdProxy({ action: 'resolveMagnet', magnets: toSend });
   if (!data.download) throw new Error(data.error || 'All streams failed');
   console.log(`[RD] ✅ Resolved on attempt ${(data.magnetIndex || 0) + 1}`);
-  return await chooseBestPlayback(data.id, data.download, data.filename);
+  return await chooseBestPlayback(data.id, data.download, data.filename, onProgress);
 }
 
 function isMagnet(url) {
