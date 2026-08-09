@@ -1069,13 +1069,24 @@ function renderStreamItems(streams, movie) {
             const setProgress = (msg) => { playBtn.textContent = `⏳ ${msg}`; };
             setProgress('Resolving…');
 
-            const allMagnets = (streamCache[movie.id] || streamCache[movie._streamId] || [])
-              .filter(s => s._source !== 'nuvio')
-              .map(s => getStreamUrl(s))
-              .filter(u => u && isMagnet(u));
-            const idx = allMagnets.indexOf(streamUrl);
-            if (idx > 0) { allMagnets.splice(idx, 1); allMagnets.unshift(streamUrl); }
-            else if (idx === -1) allMagnets.unshift(streamUrl);
+            // For a series episode, only try the stream that was actually
+            // clicked. Falling back to another magnet can silently resolve a
+            // season pack and play the wrong episode.
+            const isEpisode = /:\d+:\d+$/.test(String(movie.id || movie._streamId || ''));
+
+            let allMagnets;
+            if (isEpisode) {
+              allMagnets = [streamUrl];
+              console.log('[RD] Series episode — no magnet substitution');
+            } else {
+              allMagnets = (streamCache[movie.id] || streamCache[movie._streamId] || [])
+                .filter(s => s._source !== 'nuvio')
+                .map(s => getStreamUrl(s))
+                .filter(u => u && isMagnet(u));
+              const idx = allMagnets.indexOf(streamUrl);
+              if (idx > 0) { allMagnets.splice(idx, 1); allMagnets.unshift(streamUrl); }
+              else if (idx === -1) allMagnets.unshift(streamUrl);
+            }
 
             // Escalate the wording if it's taking a while, so a slow
             // uncached torrent doesn't look like a hang
@@ -1493,14 +1504,37 @@ async function resolveStreamUrl(rawUrl) {
 /* ══════════════════════════════════════════════
     LAUNCH ROOM
 ══════════════════════════════════════════════ */
+/* Normalise a URL that may already be percent-encoded.
+   Encoding an encoded URL turns %3A into %253A — room.html then decodes
+   once, is left with %3A, and the browser treats the result as a relative
+   path. Decode until stable before encoding exactly once. */
+function normaliseUrl(u) {
+  let out = String(u);
+  for (let i = 0; i < 3; i++) {
+    if (!/%[0-9A-Fa-f]{2}/.test(out)) break;
+    let dec;
+    try { dec = decodeURIComponent(out); } catch (e) { break; }
+    if (dec === out) break;
+    // Stop once it looks like a plain absolute URL — RD filenames can
+    // legitimately contain %5B / %5D and those must survive.
+    if (/^(https?|magnet):/i.test(out) && !/%25/.test(out)) break;
+    out = dec;
+  }
+  return out;
+}
+
 function launchRoom(streamUrl, title) {
   if (!streamUrl) {
     alert('Could not resolve a playable URL for this stream.');
     return;
   }
+
+  const clean = normaliseUrl(streamUrl);
+  console.log('[launchRoom] stream URL:', clean);
+
   const roomId = 'room_' + Math.random().toString(36).slice(2, 9);
   const url    = `room.html?room=${encodeURIComponent(roomId)}`
-               + `&stream=${encodeURIComponent(streamUrl)}`
+               + `&stream=${encodeURIComponent(clean)}`
                + `&title=${encodeURIComponent(title)}`;
   window.location.href = url;
 }
