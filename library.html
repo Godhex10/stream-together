@@ -345,6 +345,11 @@ let currentGenre   = '';
 let currentSearch  = '';
 let selectedMovie  = null;
 let contentType    = 'movie'; // 'movie' | 'series'
+// Mobile mode: hide huge/HEVC streams and sort lightest first
+let mobileMode     = localStorage.getItem('st_mobile_mode') !== 'false';
+// Remembered so the mobile toggle can re-render without refetching
+let currentPickerId    = null;
+let currentPickerMovie = null;
 
 const moviesGrid    = document.getElementById('moviesGrid');
 const searchInput   = document.getElementById('librarySearchInput');
@@ -784,6 +789,60 @@ function getSeederInfo(stream) {
   return match ? parseInt(match[1]) : 0;
 }
 
+/* Is this stream comfortable on a phone?
+   Two things matter: file size (bandwidth + buffering) and codec
+   (H.264 decodes on every device, HEVC needs GPU support). */
+const MOBILE_MAX_BYTES = 2 * 1024 * 1024 * 1024;     // 2 GB ceiling
+
+/* Torrentio frequently omits the numeric `size` field and instead puts
+   the size in its description text as "💾 8.4 GB". Reading only
+   stream.size meant those streams reported 0 and skipped every size
+   check — which is why huge files kept reaching the top of the list. */
+function parseSizeBytes(stream) {
+  if (stream.size && stream.size > 0) return stream.size;
+
+  const text  = `${stream.description || ''} ${stream.title || ''} ${stream.name || ''}`;
+  const match = text.match(/(\d+(?:\.\d+)?)\s*(GB|MB)/i);
+  if (!match) return 0;
+
+  const value = parseFloat(match[1]);
+  return match[2].toUpperCase() === 'GB'
+    ? value * 1024 * 1024 * 1024
+    : value * 1024 * 1024;
+}
+
+function isMobileFriendly(stream) {
+  const size = parseSizeBytes(stream);
+  if (size > 0 && size > MOBILE_MAX_BYTES) return false;
+
+  const full = getFullDetail(stream);
+  // HEVC/x265 shows a black screen on phones without hardware decoding
+  if (/X265|H\.?265|HEVC/.test(full)) return false;
+  // 4K is pointless on a phone and enormous
+  if (/2160P|\b4K\b/.test(full)) return false;
+  // Remux and BluRay full-disc rips are always far too large
+  if (/REMUX|BDREMUX|BLURAY DISC|COMPLETE\.BLURAY/.test(full)) return false;
+
+  return true;
+}
+
+/* Lower score = better for mobile. Used for sorting. */
+function mobileScore(stream) {
+  const parsed = parseSizeBytes(stream);
+  const size   = parsed > 0 ? parsed : Infinity;
+  const full = getFullDetail(stream);
+  let score = size;
+
+  // Nudge H.264 ahead of same-size alternatives
+  if (/X264|H\.?264|AVC/.test(full)) score *= 0.8;
+  // 720p is the sweet spot on a phone screen
+  if (/720P/.test(full)) score *= 0.85;
+  // Penalise anything that needs GPU decoding
+  if (/X265|H\.?265|HEVC/.test(full)) score *= 3;
+
+  return score;
+}
+
 /* Get streamable URL */
 function getStreamUrl(stream) {
   if (stream.url) return stream.url;
@@ -885,6 +944,8 @@ function applyBadge(imdbId, streams) {
 ══════════════════════════════════════════════ */
 async function openStreamPicker(movie) {
   selectedMovie = movie;
+  currentPickerId    = movie.id;
+  currentPickerMovie = movie;
   document.getElementById('streamModalTitle').textContent = movie.name || movie.title;
   document.getElementById('streamModalSub').textContent = '🔍 Searching Torrentio + Nuvio…';
   streamList.innerHTML = `
@@ -989,13 +1050,28 @@ function renderStreamItems(streams, movie) {
       return;
     }
 
-    // Sort by quality descending (4K → 1080p → 720p → lower)
-    // then by seeders within same quality
-    const sorted = [...filtered].sort((a, b) => {
-      const qDiff = getQualityRank(b) - getQualityRank(a);
-      if (qDiff !== 0) return qDiff;
-      return (getSeederInfo(b) || 0) - (getSeederInfo(a) || 0);
-    });
+    // In mobile mode: drop anything too big or HEVC, lightest first.
+    // Otherwise: best quality first, as before.
+    let working = filtered;
+    let hiddenCount = 0;
+
+    if (mobileMode) {
+      const mobileOk = filtered.filter(isMobileFriendly);
+      hiddenCount = filtered.length - mobileOk.length;
+      // If the filter leaves nothing, show everything rather than an empty list
+      working = mobileOk.length ? mobileOk : filtered;
+      if (!mobileOk.length) hiddenCount = 0;
+    }
+
+    const sorted = mobileMode
+      ? [...working].sort((a, b) => mobileScore(a) - mobileScore(b))
+      : [...working].sort((a, b) => {
+          const qDiff = getQualityRank(b) - getQualityRank(a);
+          if (qDiff !== 0) return qDiff;
+          return (getSeederInfo(b) || 0) - (getSeederInfo(a) || 0);
+        });
+
+    renderModeBar(hiddenCount, filtered.length);
 
     sorted.slice(0, 30).forEach(stream => {
       const fmt         = getMagnetFmt(stream);
@@ -1014,6 +1090,9 @@ function renderStreamItems(streams, movie) {
       // Build badge row: RD cached + size + video codec + audio + seeders + source
       const videoCodec = getVideoCodec(stream);
       const badges = [];
+      if (isMobileFriendly(stream)) badges.push(
+        `<span style="background:rgba(34,197,94,0.15);border:1px solid rgba(34,197,94,0.35);border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:#4ade80;" title="Small enough and H.264 — plays on any phone">📱 Phone OK</span>`
+      );
       if (sizeLabel) badges.push(
         `<span style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);border-radius:4px;padding:1px 7px;font-size:0.65rem;font-weight:700;color:#ddd;">💾 ${escapeHTML(sizeLabel)}</span>`
       );
@@ -1123,6 +1202,51 @@ function renderStreamItems(streams, movie) {
       item.addEventListener('click', (e) => { if (e.target !== playBtn) handleStreamClick(e); });
       streamList.appendChild(item);
     });
+}
+
+/* Toggle bar above the stream list — lets you flip between
+   phone-friendly picks and the full unfiltered list. */
+function renderModeBar(hiddenCount, totalCount) {
+  const existing = document.getElementById('streamModeBar');
+  if (existing) existing.remove();
+
+  const bar = document.createElement('div');
+  bar.id = 'streamModeBar';
+  bar.style.cssText =
+    'display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;' +
+    'padding:0.6rem 0.75rem;margin-bottom:0.75rem;border-radius:8px;' +
+    'background:var(--surface2);border:1px solid var(--border);';
+
+  const on = mobileMode;
+  bar.innerHTML = `
+    <button id="mobileToggle"
+      style="border:1px solid ${on ? 'rgba(34,197,94,0.4)' : 'var(--border-hover)'};
+             background:${on ? 'rgba(34,197,94,0.15)' : 'transparent'};
+             color:${on ? '#4ade80' : 'var(--muted)'};
+             border-radius:6px;padding:0.35rem 0.8rem;font-size:0.75rem;
+             font-weight:700;cursor:pointer;font-family:inherit;">
+      ${on ? '📱 Phone-friendly' : '🖥️ All streams'}
+    </button>
+    <span style="font-size:0.72rem;color:var(--muted);flex:1;min-width:150px;">
+      ${on
+        ? (hiddenCount > 0
+            ? `Smallest first · ${hiddenCount} large/HEVC stream${hiddenCount !== 1 ? 's' : ''} hidden`
+            : 'Smallest first · all streams shown')
+        : `Best quality first · ${totalCount} stream${totalCount !== 1 ? 's' : ''}`}
+    </span>`;
+
+  streamList.parentNode.insertBefore(bar, streamList);
+
+  document.getElementById('mobileToggle').addEventListener('click', () => {
+    mobileMode = !mobileMode;
+    localStorage.setItem('st_mobile_mode', String(mobileMode));
+    // Re-render from cache — no refetch needed
+    const cached = streamCache[currentPickerId];
+    if (cached) {
+      streamList.innerHTML = '';
+      renderStreamItems(cached, currentPickerMovie);
+    }
+  });
 }
 
 function showStreamError(msg) {
@@ -1293,6 +1417,8 @@ async function openSeriesStreamPicker(series, season, episode, epTitle) {
     }
 
     streamCache[streamId] = merged;
+    currentPickerId    = streamId;
+    currentPickerMovie = { ...series, id: streamId, name: fullTitle, _fullTitle: fullTitle };
 
     if (merged.length === 0) {
       streamList.innerHTML = `<div class="status-message">No streams found for this episode.</div>`;
