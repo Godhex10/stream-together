@@ -1064,7 +1064,14 @@ function renderStreamItems(streams, movie) {
     }
 
     const sorted = mobileMode
-      ? [...working].sort((a, b) => mobileScore(a) - mobileScore(b))
+      // Everything here already passed the phone-size filter, so rank by
+      // seeders — well-seeded torrents resolve faster and fail less on RD.
+      // Size only breaks ties between similarly-seeded streams.
+      ? [...working].sort((a, b) => {
+          const seedDiff = (getSeederInfo(b) || 0) - (getSeederInfo(a) || 0);
+          if (seedDiff !== 0) return seedDiff;
+          return mobileScore(a) - mobileScore(b);
+        })
       : [...working].sort((a, b) => {
           const qDiff = getQualityRank(b) - getQualityRank(a);
           if (qDiff !== 0) return qDiff;
